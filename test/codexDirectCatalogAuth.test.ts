@@ -3,6 +3,7 @@ import {
   CODEX_DIRECT_MODELS_URL,
   CODEX_DIRECT_RESPONSES_URL,
   fetchWithCodexAuth,
+  resolveCodexAuthPath,
   refreshCodexAuthSession,
   resetCodexAuthRefreshStateForTests,
 } from "../src/codexAuth/auth";
@@ -50,6 +51,49 @@ function catalogResponse(model = "gpt-codex"): Response {
 }
 
 describe("Codex Direct auth and catalog", function () {
+  describe("resolveCodexAuthPath", function () {
+    const globals = globalThis as {
+      Zotero?: unknown;
+      ztoolkit?: unknown;
+      process?: { env?: Record<string, string | undefined> };
+    };
+    let originalZotero: unknown;
+    let originalZtoolkit: unknown;
+    let originalHome: string | undefined;
+    let originalCodexHome: string | undefined;
+
+    beforeEach(function () {
+      originalZotero = globals.Zotero;
+      originalZtoolkit = globals.ztoolkit;
+      globals.ztoolkit = { getGlobal: () => undefined };
+      originalHome = process.env.HOME;
+      originalCodexHome = process.env.CODEX_HOME;
+      process.env.HOME = "/home/me";
+    });
+
+    afterEach(function () {
+      globals.Zotero = originalZotero;
+      globals.ztoolkit = originalZtoolkit;
+      process.env.HOME = originalHome;
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    });
+
+    function setPref(value: string) {
+      globals.Zotero = { Prefs: { get: () => value } };
+    }
+
+    it("prefers the setting, then inherited CODEX_HOME, then ~/.codex", function () {
+      process.env.CODEX_HOME = "/inherited";
+      setPref("/my codex");
+      assert.equal(resolveCodexAuthPath(), "/my codex/auth.json");
+      setPref("");
+      assert.equal(resolveCodexAuthPath(), "/inherited/auth.json");
+      delete process.env.CODEX_HOME;
+      assert.equal(resolveCodexAuthPath(), "/home/me/.codex/auth.json");
+    });
+  });
+
   beforeEach(function () {
     resetCodexDirectCatalogForTests();
     resetCodexAuthRefreshStateForTests();

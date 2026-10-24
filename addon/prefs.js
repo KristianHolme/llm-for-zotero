@@ -51,6 +51,7 @@ pref("enableCodexAppServerMode", false);
 pref("codexAppServerModel", "gpt-5.4");
 pref("codexAppServerReasoning", "auto");
 pref("codexAppServerPath", "");
+pref("codexHome", "");
 pref("codexAppServerConversationModeMap", "");
 pref("codexAppServerZoteroMcpToolsEnabled", true);
 pref("codexAppServerNativeApprovalsEnabled", false);

@@ -2199,6 +2199,10 @@ export function setupHandlers(
         key: `${config.prefsPrefix}.codexAppServerPath`,
         system: "codex",
       },
+      {
+        key: `${config.prefsPrefix}.codexHome`,
+        system: "codex",
+      },
     ];
     let agentObserverId: symbol | undefined;
     let claudeObserverId: symbol | undefined;

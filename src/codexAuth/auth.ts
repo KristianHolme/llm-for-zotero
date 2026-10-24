@@ -1,3 +1,4 @@
+import { getCodexHomePref } from "../utils/codexHomePref";
 import { getLocalParentPath, joinLocalPath } from "../utils/localPath";
 
 export const CODEX_DIRECT_RESPONSES_URL =
@@ -130,7 +131,7 @@ function resolveHomeDir(): string {
 }
 
 export function resolveCodexAuthPath(): string {
-  const codexHome = getProcess()?.env?.CODEX_HOME?.trim();
+  const codexHome = getCodexHomePref() || getProcess()?.env?.CODEX_HOME?.trim();
   if (codexHome) return joinLocalPath(codexHome, "auth.json");
   return joinLocalPath(resolveHomeDir(), ".codex", "auth.json");
 }

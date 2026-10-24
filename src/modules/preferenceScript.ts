@@ -288,6 +288,8 @@ import {
 } from "../claudeCode/permissionModes";
 import {
   getCodexBinaryPathPref,
+  getCodexHomePref,
+  setCodexHomePref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
@@ -1707,6 +1709,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLButtonElement | null;
   const codexAppServerPathInput = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path`,
+  ) as HTMLInputElement | null;
+  const codexHomeInput = doc.querySelector(
+    `#${config.addonRef}-codex-home`,
   ) as HTMLInputElement | null;
   const codexAppServerPathHelper = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path-helper`,
@@ -4296,6 +4301,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     codexAppServerPathInput.addEventListener("blur", commitCodexPath);
     codexAppServerPathInput.addEventListener("input", () => {
       setCodexBinaryPathPref(codexAppServerPathInput.value);
+    });
+  }
+
+  if (codexHomeInput) {
+    codexHomeInput.value = getCodexHomePref();
+    const commitCodexHome = () => {
+      setCodexHomePref(codexHomeInput.value);
+      codexHomeInput.value = getCodexHomePref();
+      void refreshCodexCatalog();
+      void refreshCodexPermissionOptions();
+    };
+    codexHomeInput.addEventListener("change", commitCodexHome);
+    codexHomeInput.addEventListener("blur", commitCodexHome);
+    codexHomeInput.addEventListener("input", () => {
+      setCodexHomePref(codexHomeInput.value);
     });
   }
 

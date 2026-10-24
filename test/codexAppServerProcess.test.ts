@@ -2803,6 +2803,124 @@ describe("codexAppServerProcess", function () {
     assert.isTrue(calls[0]?.environmentAppend);
   });
 
+  describe("Codex home folder setting", function () {
+    async function withCodexHome<T>(
+      home: string,
+      callback: () => Promise<T>,
+    ): Promise<T> {
+      const globals = globalThis as TestGlobal;
+      const original = globals.Zotero;
+      globals.Zotero = {
+        ...(original as object),
+        Prefs: { get: () => home },
+      };
+      try {
+        return await callback();
+      } finally {
+        globals.Zotero = original;
+      }
+    }
+
+    async function spawnWithHome(
+      home: string,
+      env: Record<string, string>,
+      exists: (path: string) => boolean,
+    ): Promise<SubprocessCallOptions[]> {
+      const calls: SubprocessCallOptions[] = [];
+      await withRuntimeStubs(
+        {
+          env,
+          inheritEnv: false,
+          platform: "macos",
+          ioExists: exists,
+          stubProcessLifecycle: true,
+          subprocessCall: createSpawnStub(calls),
+        },
+        () =>
+          withCodexHome(home, async () => {
+            const proc = await CodexAppServerProcess.spawn({
+              codexPath: "/opt/codex",
+            });
+            proc.destroy();
+          }),
+      );
+      return calls;
+    }
+
+    it("adds no CODEX_HOME when the setting is empty", async function () {
+      const calls = await spawnWithHome(
+        "",
+        { CODEX_HOME: "/inherited" },
+        () => true,
+      );
+      assert.lengthOf(calls, 1);
+      assert.notProperty(calls[0]?.environment || {}, "CODEX_HOME");
+    });
+
+    it("passes the configured folder, with spaces, to the child only", async function () {
+      const home = "/Users/me/Agent config/Codex Zotero";
+      const calls = await spawnWithHome(
+        home,
+        { CODEX_HOME: "/inherited" },
+        (path) => path === home || path === "/opt/codex",
+      );
+      assert.equal(calls[0]?.environment?.CODEX_HOME, home);
+      assert.isTrue(calls[0]?.environmentAppend);
+      assert.equal(
+        (globalThis as TestGlobal).process?.env?.CODEX_HOME,
+        process.env.CODEX_HOME,
+      );
+    });
+
+    it("fails with a readable error when the folder is missing", async function () {
+      let message = "";
+      try {
+        await spawnWithHome(
+          "/no/such folder",
+          {},
+          (path) => path !== "/no/such folder",
+        );
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      assert.include(message, "Codex home folder");
+      assert.include(message, "/no/such folder");
+    });
+
+    it("keeps cached processes separate for different home folders", async function () {
+      const originalSpawn = CodexAppServerProcess.spawn;
+      CodexAppServerProcess.spawn = async () =>
+        CodexAppServerProcess.forTest({
+          stdin: { write: () => {} },
+          kill: () => {},
+        });
+      try {
+        const none = await withCodexHome("", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeA = await withCodexHome("/a", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeAAgain = await withCodexHome("/a", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeB = await withCodexHome("/b", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        assert.notStrictEqual(homeA, none);
+        assert.strictEqual(homeAAgain, homeA);
+        assert.notStrictEqual(homeB, homeA);
+      } finally {
+        CodexAppServerProcess.spawn = originalSpawn;
+        for (const home of ["", "/a", "/b"]) {
+          await withCodexHome(home, async () =>
+            destroyCachedCodexAppServerProcess("home-cache"),
+          );
+        }
+      }
+    });
+  });
+
   it("uses an explicit codex path before environment or PATH lookup", async function () {
     const binary = await resolveCodexBinary("D:\\Portable\\codex.cmd");
     assert.equal(binary, "D:\\Portable\\codex.cmd");

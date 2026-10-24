@@ -1177,6 +1177,11 @@ const zhCN: Record<string, string> = {
   Advanced: "高级",
   "Codex CLI path": "Codex CLI 路径",
   "Leave blank to search your PATH.": "留空则从 PATH 中查找。",
+  "Codex home folder": "Codex 主目录",
+  "Optional absolute path to a Codex home folder":
+    "可选，Codex 主目录的绝对路径",
+  "Leave blank to use the default (~/.codex). A separate folder needs its own codex login and its own MCP setup.":
+    "留空则使用默认目录（~/.codex）。单独的目录需要单独执行 codex login，并单独配置 MCP。",
   "Runs the embedded Claude runtime against your library. When enabled, Zotero adds a Claude Code button to the chat header; you enter Claude Code mode from there, not from settings. Codex and Claude Code can both be enabled; only the selected runtime is active.":
     "在你的文献库上运行内嵌的 Claude 运行时。启用后，Zotero 会在聊天标题栏添加 Claude Code 按钮；你从那里进入 Claude Code 模式，而不是在设置中切换。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
   "Default model": "默认模型",

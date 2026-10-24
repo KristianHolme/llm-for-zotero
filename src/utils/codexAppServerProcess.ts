@@ -8,7 +8,8 @@ import type {
   CodexAppServerHistoryItem,
   CodexAppServerUserInput,
 } from "./codexAppServerInput";
-import { pathExists } from "./geckoFs";
+import { getIOUtils, pathExists } from "./geckoFs";
+import { getCodexHomePref } from "./codexHomePref";
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
@@ -317,7 +318,9 @@ export class CodexAppServerProcess {
       args = invocation.args;
       environment = invocation.environment;
     }
-    environment = buildCodexLaunchEnvironment(environment);
+    const codexHome = getCodexHomePref();
+    if (codexHome) await assertCodexHomeFolder(codexHome);
+    environment = buildCodexLaunchEnvironment(environment, codexHome);
     let proc: any;
     try {
       proc = await Subprocess.call({
@@ -2182,8 +2185,26 @@ export function mergeCodexNoProxyValues(
   return entries.join(",");
 }
 
+async function assertCodexHomeFolder(path: string): Promise<void> {
+  let isFolder = await pathExists(path);
+  if (isFolder) {
+    try {
+      const type = (await getIOUtils()?.stat?.(path))?.type;
+      if (type) isFolder = type === "directory";
+    } catch {
+      /* exists() already passed; let Codex report anything else */
+    }
+  }
+  if (!isFolder) {
+    throw new Error(
+      `The Codex home folder set in Settings > Agent > Codex > Advanced does not exist or is not a folder: ${path}`,
+    );
+  }
+}
+
 function buildCodexLaunchEnvironment(
   invocationEnvironment?: Record<string, string>,
+  codexHome?: string,
 ): Record<string, string> {
   const runtimeEnv = getCodexRuntimeEnv();
   const noProxy = mergeCodexNoProxyValues(
@@ -2194,6 +2215,8 @@ function buildCodexLaunchEnvironment(
     ...invocationEnvironment,
     NO_PROXY: noProxy,
     no_proxy: noProxy,
+    // Only the child gets it; an empty setting keeps any inherited CODEX_HOME.
+    ...(codexHome ? { CODEX_HOME: codexHome } : {}),
   };
 }
 
@@ -2897,7 +2920,11 @@ function buildProcessCacheKey(
   options: CodexAppServerProcessOptions = {},
 ): string {
   const codexPath = resolveCodexAppServerBinaryPath(options.codexPath);
-  return codexPath ? `${cacheKey}\u0000${codexPath}` : cacheKey;
+  const codexHome = getCodexHomePref();
+  let key = codexPath ? `${cacheKey}\u0000${codexPath}` : cacheKey;
+  // A changed home folder must start a fresh app-server, like a changed path.
+  if (codexHome) key += `\u0000home=${codexHome}`;
+  return key;
 }
 
 export function destroyCachedCodexAppServerProcess(
