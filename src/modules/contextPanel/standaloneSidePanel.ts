@@ -147,6 +147,7 @@ import {
   resetSideSurfaceChoices,
   startSideSurfaceChoices,
 } from "./surfaceChoices";
+import type { SideSurface, WindowSurface } from "./conversationSelection";
 import { setNeutralStatus, setStatus } from "./textUtils";
 import { copyTextToClipboard } from "./clipboard";
 import { flushPendingChatRender } from "./progressiveChatRender";
@@ -236,6 +237,13 @@ export type StandaloneSidePanelDeps = {
   mainBody: HTMLElement;
   /** The tab row's trailing slot that hosts the toggle. */
   toggleHost: HTMLElement;
+  /**
+   * The side chats' selection surface: "side" in the standalone window,
+   * "side:<id>" in the torn-off window "torn:<id>".
+   */
+  sideSurface: SideSurface;
+  /** The window the side chats start their choices from. */
+  windowSurface: WindowSurface;
   getMainContext: () => StandaloneSidePanelMainContext;
   /** The same list sources the window's Search history popup uses. */
   historyList: Pick<
@@ -1638,11 +1646,11 @@ export function createStandaloneSidePanel(
         ? createPaperPortalItem(view.basePaperItem, conversationKey, 1)
         : createGlobalPortalItem(context.libraryID, conversationKey);
     view.item = item;
-    markSidePanelBody(body, undefined, "side");
+    markSidePanelBody(body, undefined, deps.sideSurface);
     const panelRoot = mountPanelShell({
       body,
       renderItem: item,
-      beforeRegister: () => markSidePanelBody(body, item, "side"),
+      beforeRegister: () => markSidePanelBody(body, item, deps.sideSurface),
       getMountedItem: () => item,
       rawItem: context.kind === "paper" ? view.basePaperItem : null,
       setupItem: item,
@@ -1734,7 +1742,7 @@ export function createStandaloneSidePanel(
     // The first side chat starts from the window's model and reasoning
     // choices; later ones share the side chats' choices.
     if (!sideChatViews().length) {
-      startSideSurfaceChoices("side", "standalone");
+      startSideSurfaceChoices(deps.sideSurface, deps.windowSurface);
     }
     const { tab, tabTitle } = createTab(id, "sidechat", t("Side chat"));
     const view: SideChatTabView = {
@@ -3494,7 +3502,7 @@ export function createStandaloneSidePanel(
         sideChatSlashItem: undefined,
         sideChatQuote: undefined,
       });
-      resetSideSurfaceChoices("side");
+      resetSideSurfaceChoices(deps.sideSurface);
     },
   };
 }

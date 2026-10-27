@@ -190,6 +190,8 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import {
+  isSideSurface,
+  isTornSurface,
   recall,
   recallActive,
   remember,
@@ -765,6 +767,11 @@ export function setupHandlers(
   // The window's temporary side chat (markSidePanelBody): API runtime only,
   // never saved, and never a Zotero "Add as context" target.
   const isSidePanel = isSidePanelBody(body);
+  // WebChat drives one browser session that only the sidebar and the
+  // standalone window use: a side chat is never saved, and a torn-off window
+  // never takes the session from the standalone window.
+  const offersWebChatModels = () =>
+    !isSidePanel && !isTornSurface(selectionSurface());
   // The model and backend this panel's surface has chosen (surfaceChoices.ts):
   // the sidebar's are the saved prefs; the window's live in memory.
   const panelChoices = bindSurfaceChoices(selectionSurface);
@@ -776,10 +783,21 @@ export function setupHandlers(
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
   if (__env__ !== "production" && !getPanelHostBinding(body)) {
+    // A body declares its own surface (a torn window's "torn:<id>", its
+    // side chat's "side:<id>"); the standalone window's are the defaults.
+    const declaredSurface = selectionSurface();
     if (isSidePanel) {
-      bindSidePanelHost(body, rawPanelItem, "side");
+      bindSidePanelHost(
+        body,
+        rawPanelItem,
+        isSideSurface(declaredSurface) ? declaredSurface : "side",
+      );
     } else if (existingPanelRoot?.dataset.standalone === "true") {
-      bindStandalonePanelHost(body, rawPanelItem);
+      bindStandalonePanelHost(
+        body,
+        rawPanelItem,
+        isTornSurface(declaredSurface) ? declaredSurface : "standalone",
+      );
     } else {
       bindTestPanelHost(body, rawPanelItem);
     }
@@ -5635,8 +5653,8 @@ export function setupHandlers(
       : isCodexConversationSystem()
         ? getCodexRuntimeModelEntries()
         : getAvailableModelEntries().filter(
-            // A side chat is never saved, so it never runs on WebChat.
-            (entry) => !isSidePanel || entry.authMode !== "webchat",
+            // Neither a side chat nor a torn-off window runs on WebChat.
+            (entry) => offersWebChatModels() || entry.authMode !== "webchat",
           );
     const groupedChoices: Array<{
       providerLabel: string;
