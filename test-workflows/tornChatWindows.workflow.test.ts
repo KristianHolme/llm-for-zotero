@@ -555,6 +555,14 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       key,
       paperId: a.parentItemId,
     });
+    const chips = chipKeys(tornWin());
+    assert.isNotEmpty(chips, "the torn-off window still shows a paper chip");
+    for (const chip of chips) {
+      assert.isTrue(
+        chip.startsWith(`${a.parentItemId}:`),
+        `the torn-off window's chips stay A's after the reader moved to B: ${JSON.stringify(chips)}`,
+      );
+    }
   });
 
   // ── W2 ───────────────────────────────────────────────────────────────────
@@ -1754,6 +1762,112 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       lastAssistantBubbleText(rootOf(standalone)),
       "MIRROR-PART-ONE MIRROR-PART-TWO",
     );
+  });
+
+  // ── W22 ──────────────────────────────────────────────────────────────────
+
+  it("W22: a question asked in the torn-off window carries its own paper's text while Zotero shows reader B", async function () {
+    const { a, b, readerB, standalone } = await setupTornOnA("Torn W22");
+    showReader(readerB);
+    await until(
+      () => stateOf(standalone).basePaperItemId === b.parentItemId,
+      () =>
+        `the standalone window follows the reader to B: ${JSON.stringify(stateOf(standalone))}`,
+    );
+    await Zotero.Promise.delay(500);
+    api.enableLiveAgentSending();
+    const question = "Torn W22 question about its paper";
+    const body = bodyOf(tornWin());
+    assert.isOk(body, "the torn-off window has a panel");
+    const input = body!.querySelector("#llm-input") as HTMLTextAreaElement;
+    const win = tornWin() as any;
+    input.value = question;
+    input.dispatchEvent(new win.Event("input", { bubbles: true }));
+    (body!.querySelector("#llm-send") as HTMLButtonElement).click();
+    const stream = await provider.waitForStream(question);
+    try {
+      assert.include(
+        stream.requestBody,
+        "Torn W22 A: a short page",
+        "the request carries paper A's text",
+      );
+      assert.notInclude(
+        stream.requestBody,
+        "Torn W22 B: a short page",
+        "the request does not carry paper B's text",
+      );
+      for (const chip of chipKeys(tornWin())) {
+        assert.isTrue(
+          chip.startsWith(`${a.parentItemId}:`),
+          `the torn-off window's chips are A's: ${JSON.stringify(chipKeys(tornWin()))}`,
+        );
+      }
+    } finally {
+      stream.finish();
+    }
+  });
+
+  // ── W23 ──────────────────────────────────────────────────────────────────
+
+  it("W23: clicking a pinned paper in the torn-off window moves only that window", async function () {
+    Zotero.Prefs.set(PINNED_PREF, "", true);
+    try {
+      const { a, b, readerA, readerB, standalone } =
+        await setupTornOnA("Torn W23");
+      // Pin B from the standalone window while Zotero shows B.
+      showReader(readerB);
+      await until(
+        () => stateOf(standalone).basePaperItemId === b.parentItemId,
+        () => `the standalone window follows to B`,
+      );
+      clickPin(standalone, "standalone window");
+      await until(
+        () => pinnedPref().includes(b.parentItemId),
+        () => `the pref holds B's pin: ${JSON.stringify(pinnedPref())}`,
+      );
+      // Zotero and the standalone window go back to A.
+      showReader(readerA);
+      await until(
+        () => stateOf(standalone).basePaperItemId === a.parentItemId,
+        () => `the standalone window follows back to A`,
+      );
+      await until(
+        () => pinnedRows(tornWin()).includes(b.parentItemId),
+        () => `the torn-off window lists B's pin`,
+      );
+      const selectedTab = mainWin().Zotero_Tabs.selectedID;
+      const selectedItems = mainWin()
+        .ZoteroPane.getSelectedItems(true)
+        .join(",");
+      const row = tornWin()!.document.querySelector(
+        `.llm-standalone-pinned-paper[data-paper-item-id="${b.parentItemId}"]`,
+      ) as HTMLElement | null;
+      assert.isOk(row, "the torn-off window lists B's pinned row");
+      row!.click();
+      await until(
+        () => stateOf(tornWin()).basePaperItemId === b.parentItemId,
+        () =>
+          `the torn-off window moves to B: ${JSON.stringify(stateOf(tornWin()))}`,
+      );
+      await Zotero.Promise.delay(500);
+      assert.equal(
+        mainWin().Zotero_Tabs.selectedID,
+        selectedTab,
+        "Zotero's selected tab is unchanged",
+      );
+      assert.equal(
+        mainWin().ZoteroPane.getSelectedItems(true).join(","),
+        selectedItems,
+        "the library selection is unchanged",
+      );
+      assert.equal(
+        stateOf(standalone).basePaperItemId,
+        a.parentItemId,
+        "the standalone window stays on A",
+      );
+    } finally {
+      Zotero.Prefs.set(PINNED_PREF, "", true);
+    }
   });
 
   // ── W21 ──────────────────────────────────────────────────────────────────

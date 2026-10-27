@@ -650,7 +650,7 @@ export function isConversationShownOutsideWebChat(
   ) => isEffectiveWebChatRequest(item, resolveSelectionSurfaceForBody(body)),
 ): boolean {
   for (const [body, getItem] of activeContextPanels) {
-    if (body === exceptBody || !body.isConnected) continue;
+    if (body === exceptBody || !isLivePanelBody(body)) continue;
     const item = getItem?.() || null;
     if (!item) continue;
     if (getPanelBodyConversationKey(body, item) !== conversationKey) continue;

@@ -3201,6 +3201,18 @@ export function setupHandlers(
     }
     const activeReaderAttachment = getActiveContextAttachmentFromTabs();
     if (activeReaderAttachment) {
+      const ownerPaperId = sourceItem?.isAttachment?.()
+        ? sourceItem.parentID
+        : sourceItem?.id;
+      if (
+        sourceItem &&
+        ownerPaperId &&
+        activeReaderAttachment.id !== sourceItem.id &&
+        activeReaderAttachment.parentID !== ownerPaperId
+      ) {
+        // The reader shows another paper; resolve the panel's own paper.
+        return resolveContextSourceItem(sourceItem);
+      }
       return resolveContextSourceItem(activeReaderAttachment);
     }
     return null;
