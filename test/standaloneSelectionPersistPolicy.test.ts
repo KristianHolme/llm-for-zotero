@@ -124,10 +124,10 @@ describe("conversation selection persist policy", function () {
     assert.include(guarded, "setLockedGlobalConversationKey(libraryID, null)");
   });
 
-  it("a side chat never captures Zotero's Add as context", function () {
+  it("a side chat and a torn-off window never capture Zotero's Add as context", function () {
     assert.include(
       setupHandlers,
-      "const unregisterContextSurfaceActions = isSidePanel\n    ? () => undefined\n    : registerContextSurfaceActionTarget(body, {",
+      "const unregisterContextSurfaceActions =\n    isSidePanel || isTornSurface(selectionSurface())\n      ? () => undefined\n      : registerContextSurfaceActionTarget(body, {",
     );
   });
 

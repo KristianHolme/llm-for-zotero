@@ -51,6 +51,7 @@ import {
 import { disposeSetupHandlers } from "./modules/contextPanel/setupHandlers";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
+import { closeAllTornChatWindows } from "./modules/contextPanel/tornChatWindows";
 import {
   initializePaperRestoreSelections,
   shutdownPaperRestoreSelections,
@@ -738,6 +739,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
   unregisterNoteEditingSelectionTracking(win);
   closeAllAddonDialogs();
   addon.data.standaloneWindow?.close();
+  closeAllTornChatWindows();
   removePluginWindowDom(win);
 }
 
@@ -839,6 +841,7 @@ async function shutdownPlugin(reason: PluginLifecycleReason): Promise<void> {
   await runShutdownStep("standalone window", () =>
     addon.data.standaloneWindow?.close(),
   );
+  await runShutdownStep("torn-off chat windows", closeAllTornChatWindows);
   // Zotero would keep this section's element, and so these hooks, if the
   // next version registers it again before the item pane renders.
   await runShutdownStep("item pane section", unregisterReaderContextPanel);

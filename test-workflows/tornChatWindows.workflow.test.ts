@@ -1332,4 +1332,159 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     await Zotero.Promise.delay(500);
     assert.lengthOf(api.getTornChatWindowsForTest(), 0);
   });
+
+  // ── W15 ──────────────────────────────────────────────────────────────────
+
+  it("W15: with only torn-off windows open, Open in Window opens the standalone window", async function () {
+    const { a, key } = await setupTornOnA("Torn W15");
+    const torn = tornWin()!;
+    await api.closeStandalone();
+    assert.isNull(standaloneWin(), "the standalone window is closed");
+    assert.isFalse(torn.closed, "the torn-off window outlives it");
+
+    // The user's own entry point: the sidebar's pop-out button.
+    const win = mainWin();
+    win.Zotero_Tabs?.select?.("zotero-pane");
+    await win.ZoteroPane.selectItem(a.parentItemId);
+    const details = win.document.getElementById("zotero-item-details");
+    const section = () =>
+      details?.querySelector(".llm-dedicated-chat-pane") as HTMLElement | null;
+    await until(
+      () => Boolean(section()),
+      () => "native chat section is registered in the item pane",
+    );
+    if (
+      win.document.documentElement.getAttribute("data-llm-pane-view") !==
+        "chat" ||
+      (details as any).sidenav._collapsed
+    ) {
+      const button = Array.from(
+        (details as any).sidenav.querySelectorAll("[data-pane]"),
+      ).find(
+        (node: any) =>
+          node.getAttribute("data-pane") === section()!.dataset.pane,
+      ) as Element | undefined;
+      assert.isOk(button, "the chat rail icon exists");
+      button!.dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, button: 0 }),
+      );
+    }
+    const popout = () =>
+      section()?.querySelector("#llm-popout") as HTMLElement | null;
+    await until(
+      () => Boolean(popout() && popout()!.getBoundingClientRect().width > 0),
+      () => "the sidebar pop-out button is visible",
+    );
+    popout()!.click();
+    await until(
+      () => Boolean(standaloneWin()),
+      () => "Open in Window opens the standalone window",
+      15_000,
+    );
+    assert.isTrue(
+      standaloneWin() !== torn,
+      "the standalone window is a new window, not the torn-off one",
+    );
+    assert.isFalse(torn.closed, "the torn-off window stays open");
+    assert.lengthOf(api.getTornChatWindowsForTest(), 1);
+    assertTornOnA("after Open in Window", { key, paperId: a.parentItemId });
+  });
+
+  // ── W16 ──────────────────────────────────────────────────────────────────
+
+  it("W16: Add Items as Context never lands in a torn-off window", async function () {
+    // Create the paper to add first: a new item re-registers the standalone
+    // window's panel, and the torn-off window must be the last to register.
+    const c = await newPaper("Torn W16 C");
+    const { standalone } = await setupTornOnA("Torn W16");
+    const chipKeys = (win: Window): string[] =>
+      Array.from(
+        bodyOf(win)?.querySelectorAll(
+          "#llm-paper-context-preview .llm-paper-context-chip",
+        ) || [],
+      ).map(
+        (chip: any) =>
+          `${chip.dataset.paperItemId}:${chip.dataset.paperContextItemId}`,
+      );
+    const tornBefore = chipKeys(tornWin()!);
+    const tornStateBefore = stateOf(tornWin());
+    const standaloneKeyBefore = stateOf(standalone).conversationKey;
+    // The torn-off window registered last. Zotero's menu command reaches
+    // dispatchZoteroItemsAsContext, which the harness helper calls too.
+    const result = await api.addItemsAsStandaloneContext([c.parentItemId]);
+    assert.isTrue(standaloneWin() === standalone, "the same window answers");
+    await until(
+      () =>
+        chipKeys(standaloneWin()!).some((k) =>
+          k.startsWith(`${c.parentItemId}:`),
+        ),
+      () =>
+        `the chip appears in the standalone window: ${JSON.stringify(chipKeys(standaloneWin()!))} ${JSON.stringify(result.chipText)}`,
+    );
+    await Zotero.Promise.delay(500);
+    assert.deepEqual(
+      chipKeys(tornWin()!),
+      tornBefore,
+      "the torn-off window gets no chip",
+    );
+    assert.deepEqual(
+      stateOf(tornWin()),
+      tornStateBefore,
+      "the torn-off window keeps its chat and panel state",
+    );
+    assert.isAbove(
+      standaloneKeyBefore,
+      0,
+      "the standalone window had a chat before",
+    );
+  });
+
+  // ── W17 ──────────────────────────────────────────────────────────────────
+
+  it("W17: a font-size change reaches torn-off windows", async function () {
+    await setupTornOnA("Torn W17");
+    const scaleOf = (win: Window | null) =>
+      rootOf(win)?.style.getPropertyValue("--llm-font-scale") || "";
+    const prefs = (
+      Zotero.Utilities.Internal as unknown as {
+        openPreferences: (pane: string) => Window;
+      }
+    ).openPreferences("llmforzotero-preferences");
+    assert.isOk(prefs, "preferences window should open");
+    const slider = () =>
+      prefs.document.querySelector(
+        "#llmforzotero-panel-font-scale",
+      ) as HTMLInputElement | null;
+    try {
+      await until(
+        () => Boolean(slider()),
+        () => "the preferences pane renders the font-size slider",
+        30_000,
+      );
+      await Zotero.Promise.delay(1000);
+      const before = scaleOf(tornWin());
+      slider()!.value = before === "1.4" ? "120" : "140";
+      slider()!.dispatchEvent(
+        new (prefs as any).Event("input", { bubbles: true }),
+      );
+      const expected = before === "1.4" ? "1.2" : "1.4";
+      await until(
+        () => scaleOf(standaloneWin()) === expected,
+        () =>
+          `the standalone window takes ${expected}: ${scaleOf(standaloneWin())}`,
+      );
+      assert.equal(
+        scaleOf(tornWin()),
+        expected,
+        "the torn-off window takes the new font size",
+      );
+    } finally {
+      (
+        prefs.document.querySelector(
+          "#llmforzotero-panel-font-scale-reset",
+        ) as HTMLElement | null
+      )?.click();
+      prefs.close();
+    }
+  });
 });

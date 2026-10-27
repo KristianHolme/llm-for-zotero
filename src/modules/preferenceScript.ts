@@ -14,6 +14,7 @@ import {
 } from "../utils/llmDefaults";
 import { HTML_NS, createElement, el, iconBtn } from "../utils/domHelpers";
 import { registerAddonDialog } from "../utils/dialogRegistry";
+import { getTornChatWindows } from "./contextPanel/tornChatWindows";
 import {
   normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
@@ -3415,6 +3416,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         .forEach((n: Element) => push(n as HTMLElement));
       push(
         standaloneWin.document.getElementById(
+          "llmforzotero-standalone-chat-root",
+        ) as HTMLElement | null,
+      );
+    }
+    for (const tornWin of getTornChatWindows()) {
+      const d = tornWin.document;
+      if (!d) continue;
+      d.querySelectorAll("#llm-main").forEach((n: Element) =>
+        push(n as HTMLElement),
+      );
+      push(
+        d.getElementById(
           "llmforzotero-standalone-chat-root",
         ) as HTMLElement | null,
       );

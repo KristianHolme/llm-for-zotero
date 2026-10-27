@@ -9111,35 +9111,39 @@ export function setupHandlers(
     if (result.changed) flushPanelStateRefreshNow();
   };
 
-  // The side chat never captures Zotero's "Add as context": that action
-  // always goes to the window's main chat (or a sidebar panel).
-  const unregisterContextSurfaceActions = isSidePanel
-    ? () => undefined
-    : registerContextSurfaceActionTarget(body, {
-        surfaceKind: isStandalonePanel ? "standalone" : "embedded",
-        addItemsAsDefaultContext: addItemsAsDefaultContextForPanel,
-        afterItemsAsDefaultContextAdded: (result) => {
-          if (!isStandalonePanel || !result.changed) return;
-          flushPanelStateRefreshNow();
-          hooks?.onDefaultContextRendered?.();
-        },
-        prepareItemsAsDefaultContextTarget: isStandalonePanel
-          ? hooks?.prepareItemsAsDefaultContextTarget
-          : async () => {
-              if (isNoteSession() || isWebChatMode()) return false;
-              const lease = capturePanelOperationLease(body);
-              const libraryID = getCurrentLibraryID();
-              if (!lease || !libraryID) return false;
-              const summary = await conversationRepository.createCatalogEntry({
-                system: getConversationSystem(),
-                kind: "global",
-                libraryID,
-              });
-              if (!summary || !isPanelOperationLeaseCurrent(lease))
-                return false;
-              return switchGlobalConversation(summary.conversationKey);
-            },
-      });
+  // The side chat and a torn-off window never capture Zotero's "Add as
+  // context": that action always goes to the one standalone window (or a
+  // sidebar panel).
+  const unregisterContextSurfaceActions =
+    isSidePanel || isTornSurface(selectionSurface())
+      ? () => undefined
+      : registerContextSurfaceActionTarget(body, {
+          surfaceKind: isStandalonePanel ? "standalone" : "embedded",
+          addItemsAsDefaultContext: addItemsAsDefaultContextForPanel,
+          afterItemsAsDefaultContextAdded: (result) => {
+            if (!isStandalonePanel || !result.changed) return;
+            flushPanelStateRefreshNow();
+            hooks?.onDefaultContextRendered?.();
+          },
+          prepareItemsAsDefaultContextTarget: isStandalonePanel
+            ? hooks?.prepareItemsAsDefaultContextTarget
+            : async () => {
+                if (isNoteSession() || isWebChatMode()) return false;
+                const lease = capturePanelOperationLease(body);
+                const libraryID = getCurrentLibraryID();
+                if (!lease || !libraryID) return false;
+                const summary = await conversationRepository.createCatalogEntry(
+                  {
+                    system: getConversationSystem(),
+                    kind: "global",
+                    libraryID,
+                  },
+                );
+                if (!summary || !isPanelOperationLeaseCurrent(lease))
+                  return false;
+                return switchGlobalConversation(summary.conversationKey);
+              },
+        });
 
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
