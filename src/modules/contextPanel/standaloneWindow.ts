@@ -33,6 +33,7 @@ import {
   getClaudeCodeModeEnabled,
   getLastUsedUpstreamGlobalConversationKey,
   getStandaloneSidebarWidthPref,
+  getStandaloneListPrefNames,
   getStandalonePinnedPapersPref,
   getStandaloneSidebarCollapsedGroupsPref,
   getStandaloneSidebarGroupOrderPref,
@@ -238,6 +239,7 @@ import {
   getStandaloneSidebarSectionOptions,
   groupStandaloneSidebarEntries,
   moveStandaloneSidebarGroup,
+  serializeStandaloneSidebarSectionOptions,
   sortStandaloneSidebarEntries,
   type StandaloneSidebarGroupKey,
   type StandaloneSidebarSortOrder,
@@ -939,6 +941,7 @@ function openChatWindowInstance(
   let darkMQ: MediaQueryList | null = null;
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
+  let cleanupStandaloneListPrefObservers: (() => void) | null = null;
   let cleanupStandaloneTabFollow: (() => void) | null = null;
   let cleanupTornPaperWatch: (() => void) | null = null;
   // The module-level reader link this window set (the standalone window
@@ -2744,12 +2747,15 @@ function openChatWindowInstance(
 
       // Agent / Codex / Claude sections: their order, which are folded, each
       // one's own sort and dates, and the list last drawn (so a change
-      // redraws without a reload).
+      // redraws without a reload). The first three are this window's copies
+      // of prefs that every chat window shares: a change reads the pref,
+      // applies only itself, and writes it back, so it never undoes a change
+      // made in another window.
       let sidebarGroupOrder = getStandaloneSidebarGroupOrderPref();
-      const sidebarCollapsedGroups = new Set(
+      let sidebarCollapsedGroups = new Set(
         getStandaloneSidebarCollapsedGroupsPref(),
       );
-      const sidebarSectionOptions = getStandaloneSidebarSectionOptionsPref();
+      let sidebarSectionOptions = getStandaloneSidebarSectionOptionsPref();
       let lastSidebarConversations: SidebarConv[] | null = null;
       // The section whose sort button opened the shared sort menu.
       let sidebarSortMenuKey: StandaloneSidebarGroupKey | null = null;
@@ -2827,16 +2833,18 @@ function openChatWindowInstance(
           ".llm-standalone-history-sort-item",
         ) as HTMLButtonElement | null;
         if (!item || !key) return;
+        const savedOptions = getStandaloneSidebarSectionOptionsPref();
         const options = {
-          ...getStandaloneSidebarSectionOptions(sidebarSectionOptions, key),
+          ...getStandaloneSidebarSectionOptions(savedOptions, key),
         };
         if (item.dataset.sortOrder) {
           options.sort = item.dataset.sortOrder as StandaloneSidebarSortOrder;
         } else if (item.dataset.sortToggle === "dates") {
           options.showDates = !options.showDates;
         }
-        sidebarSectionOptions.set(key, options);
-        setStandaloneSidebarSectionOptionsPref(sidebarSectionOptions);
+        savedOptions.set(key, options);
+        sidebarSectionOptions = savedOptions;
+        setStandaloneSidebarSectionOptionsPref(savedOptions);
         if (item.dataset.sortOrder) {
           redrawSidebarSections();
           sidebarSortButtonFor(key)?.focus();
@@ -2883,11 +2891,11 @@ function openChatWindowInstance(
       // at the end sets its order, and dragging a label (or Alt+Up/Down)
       // moves the section.
       const toggleSidebarGroup = (key: StandaloneSidebarGroupKey) => {
-        if (sidebarCollapsedGroups.has(key)) sidebarCollapsedGroups.delete(key);
-        else sidebarCollapsedGroups.add(key);
-        setStandaloneSidebarCollapsedGroupsPref(
-          Array.from(sidebarCollapsedGroups),
-        );
+        const collapsed = new Set(getStandaloneSidebarCollapsedGroupsPref());
+        if (collapsed.has(key)) collapsed.delete(key);
+        else collapsed.add(key);
+        sidebarCollapsedGroups = collapsed;
+        setStandaloneSidebarCollapsedGroupsPref(Array.from(collapsed));
         redrawSidebarSections(key);
       };
       // A section's "+": a new chat in the window's own mode works like the
@@ -2980,7 +2988,7 @@ function openChatWindowInstance(
             (el) => (el as HTMLElement).dataset.groupKey,
           ) as StandaloneSidebarGroupKey[];
           sidebarGroupOrder = moveStandaloneSidebarGroup(
-            sidebarGroupOrder,
+            getStandaloneSidebarGroupOrderPref(),
             key as StandaloneSidebarGroupKey,
             toIndex,
             visible,
@@ -2989,6 +2997,27 @@ function openChatWindowInstance(
           redrawSidebarSections(key as StandaloneSidebarGroupKey);
         },
       });
+      // Takes the sections' order, folds and sort options from the prefs
+      // after another window changed them; redraws only on a real change,
+      // so this window's own writes (copied before writing) draw nothing.
+      const refreshSidebarSectionPrefs = () => {
+        const order = getStandaloneSidebarGroupOrderPref();
+        const collapsed = new Set(getStandaloneSidebarCollapsedGroupsPref());
+        const options = getStandaloneSidebarSectionOptionsPref();
+        const sameCollapsed =
+          collapsed.size === sidebarCollapsedGroups.size &&
+          Array.from(collapsed).every((key) => sidebarCollapsedGroups.has(key));
+        const changed =
+          order.join(",") !== sidebarGroupOrder.join(",") ||
+          !sameCollapsed ||
+          serializeStandaloneSidebarSectionOptions(options) !==
+            serializeStandaloneSidebarSectionOptions(sidebarSectionOptions);
+        if (!changed) return;
+        sidebarGroupOrder = order;
+        sidebarCollapsedGroups = collapsed;
+        sidebarSectionOptions = options;
+        redrawSidebarSections();
+      };
 
       const renderSidebarItems = (conversations: SidebarConv[]) => {
         setSidebarSortMenuOpen(false);
@@ -5657,6 +5686,8 @@ function openChatWindowInstance(
       }
 
       // -- Pinned papers ------------------------------------------------------
+      // The window's copy first, then the shared pref, so the pref observer
+      // below finds nothing new and this window does not draw twice.
       const savePinnedPapers = (ids: number[]) => {
         pinnedPaperIDs = ids;
         setStandalonePinnedPapersPref(ids);
@@ -5666,7 +5697,11 @@ function openChatWindowInstance(
         return item && !(item as any).deleted ? item : null;
       };
       const togglePin = (paperID: number) => {
-        savePinnedPapers(togglePinnedPaper(pinnedPaperIDs, paperID));
+        // From the pref, not this window's copy: another window may have
+        // pinned or unpinned a paper since.
+        savePinnedPapers(
+          togglePinnedPaper(getStandalonePinnedPapersPref(), paperID),
+        );
         if (!pinnedPaperIDs.includes(paperID)) {
           readyPinnedPaperIDs.delete(paperID);
         }
@@ -5848,7 +5883,7 @@ function openChatWindowInstance(
         sidebarView.pinnedList.hidden = pinnedCollapsed;
       };
       const togglePinnedFold = () => {
-        pinnedCollapsed = !pinnedCollapsed;
+        pinnedCollapsed = !getStandaloneSidebarPinnedCollapsedPref();
         setStandaloneSidebarPinnedCollapsedPref(pinnedCollapsed);
         syncPinnedFold();
       };
@@ -5923,6 +5958,67 @@ function openChatWindowInstance(
       );
       renderPinnedPapers();
 
+      // -- List prefs shared by every chat window ------------------------------
+      // A change another window made to the pinned papers or the sections
+      // reaches this window through its pref: refresh the copies and redraw
+      // once, after the change settles.
+      {
+        let refreshQueued = false;
+        const refreshListPrefs = () => {
+          refreshQueued = false;
+          if (cancelled || newWin.closed) return;
+          const pinned = getStandalonePinnedPapersPref();
+          if (pinned.join(",") !== pinnedPaperIDs.join(",")) {
+            pinnedPaperIDs = pinned;
+            for (const paperID of Array.from(readyPinnedPaperIDs)) {
+              if (!pinned.includes(paperID))
+                readyPinnedPaperIDs.delete(paperID);
+            }
+            syncPinButton();
+            renderPinnedPapers();
+          }
+          const folded = getStandaloneSidebarPinnedCollapsedPref();
+          if (folded !== pinnedCollapsed) {
+            pinnedCollapsed = folded;
+            syncPinnedFold();
+          }
+          refreshSidebarSectionPrefs();
+        };
+        const observerIds: symbol[] = [];
+        const unregister = () => {
+          for (const observerId of observerIds.splice(0)) {
+            try {
+              (Zotero as any).Prefs.unregisterObserver(observerId);
+            } catch {
+              void 0;
+            }
+          }
+        };
+        cleanupStandaloneListPrefObservers = unregister;
+        const onListPrefChange = () => {
+          if (cancelled || newWin.closed) {
+            unregister();
+            return;
+          }
+          if (refreshQueued) return;
+          refreshQueued = true;
+          newWin.setTimeout(refreshListPrefs, 0);
+        };
+        try {
+          for (const prefName of getStandaloneListPrefNames()) {
+            observerIds.push(
+              (Zotero as any).Prefs.registerObserver(
+                prefName,
+                onListPrefChange,
+                true,
+              ),
+            );
+          }
+        } catch {
+          void 0;
+        }
+      }
+
       // Initial mount preserves the current paper/library conversation. The
       // only automatic blank draft is created once during Zotero startup.
       appLogger.debug(
@@ -5977,6 +6073,8 @@ function openChatWindowInstance(
     unsubscribeStandalonePendingDeletions?.();
     unsubscribeStandalonePendingDeletions = null;
     cleanupStandalonePrefObserver?.();
+    cleanupStandaloneListPrefObservers?.();
+    cleanupStandaloneListPrefObservers = null;
     cleanupStandaloneTabFollow?.();
     cleanupStandaloneTabFollow = null;
     cleanupTornPaperWatch?.();

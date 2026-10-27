@@ -11,6 +11,14 @@ import type {
   WorkflowTestApi,
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
+import {
+  installHeldChatProvider,
+  type HeldChatProvider,
+} from "./helpers/heldChatProvider";
+import {
+  lastAssistantBubbleText,
+  startSharedConversationStream,
+} from "./helpers/sharedConversationStream";
 
 /**
  * A torn-off chat window is a second instance of the standalone window
@@ -19,8 +27,10 @@ import type {
  * window. The standalone window keeps its singleton behavior.
  *
  * Everything runs in the real Zotero host against real reader tabs and real
- * chat windows. No request is sent; model entries point at an unreachable
- * fake API, so only the menus and choices are exercised.
+ * chat windows. Most cases send nothing and exercise only the menus and
+ * choices; the two-window streaming cases send through the panels' own
+ * composers to a held fake provider, so the test decides when each answer
+ * streams and ends.
  */
 
 declare const Zotero: any;
@@ -46,6 +56,9 @@ const SAVED_PREF_KEYS = [
   "enableCodexAppServerMode",
   "enableClaudeCodeMode",
   "sidebarLayout",
+  "standalonePinnedPapers",
+  "standaloneSidebarCollapsedGroups",
+  "logLevel",
 ];
 
 type PanelState = {
@@ -116,6 +129,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   this.timeout(180_000);
 
   let api: WorkflowTestApi;
+  let provider: HeldChatProvider;
   const previousPrefs = new Map<string, unknown>();
   const fixtures: WorkflowTestFixture[] = [];
   const readers: any[] = [];
@@ -443,6 +457,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     for (const key of SAVED_PREF_KEYS) {
       previousPrefs.set(key, Zotero.Prefs.get(PREF_PREFIX + key, true));
     }
+    provider = installHeldChatProvider(API_BASE);
     Zotero.Prefs.set(PREF_PREFIX + "sidebarLayout", "independent", true);
     Zotero.Prefs.set(PREF_PREFIX + "conversationSystem", "upstream", true);
     Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", false, true);
@@ -451,6 +466,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   });
 
   after(async function () {
+    provider?.restore();
     await api.reset();
     for (const [key, value] of previousPrefs) {
       if (value === undefined) Zotero.Prefs.clear(PREF_PREFIX + key, true);
@@ -467,6 +483,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   });
 
   afterEach(async function () {
+    provider.failOpenStreams("workflow case ended");
     await api.closeTornChatWindowsForTest();
     for (const reader of readers.splice(0)) {
       try {
@@ -1486,5 +1503,368 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       )?.click();
       prefs.close();
     }
+  });
+
+  // ── Two live windows: shared list prefs and one chat in both ─────────────
+
+  const PINNED_PREF = PREF_PREFIX + "standalonePinnedPapers";
+  const COLLAPSED_GROUPS_PREF =
+    PREF_PREFIX + "standaloneSidebarCollapsedGroups";
+
+  const pinnedPref = (): number[] => {
+    try {
+      const parsed = JSON.parse(
+        String(Zotero.Prefs.get(PINNED_PREF, true) || "[]"),
+      );
+      return Array.isArray(parsed) ? parsed.map(toKey).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const pinnedRows = (win: Window | null): number[] =>
+    Array.from(
+      win?.document.querySelectorAll(".llm-standalone-pinned-paper") || [],
+    ).map((row: any) => toKey(row.dataset.paperItemId));
+
+  const pinButtonOf = (win: Window) =>
+    win.document.querySelector(
+      ".llm-standalone-icon-pin",
+    ) as HTMLButtonElement | null;
+
+  const groupHeaderOf = (win: Window | null, key: string) =>
+    (win?.document.querySelector(
+      `.llm-standalone-sidebar-list .llm-standalone-conv-group[data-group-key="${key}"]`,
+    ) as HTMLElement | null) || null;
+
+  function clickPin(win: Window, name: string): void {
+    const button = pinButtonOf(win);
+    assert.isOk(button && !button.hidden, `the ${name} shows its pin button`);
+    button!.click();
+  }
+
+  /** Counts list redraws in both windows while `ms` pass. */
+  async function countListMutations(
+    windows: Window[],
+    ms: number,
+  ): Promise<number> {
+    let count = 0;
+    const observers = windows.map((win) => {
+      const observer = new (win as any).MutationObserver(
+        (records: unknown[]) => {
+          count += records.length;
+        },
+      );
+      for (const selector of [
+        ".llm-standalone-pinned-list",
+        ".llm-standalone-sidebar-list",
+      ]) {
+        const node = win.document.querySelector(selector);
+        if (node) observer.observe(node, { childList: true });
+      }
+      return observer;
+    });
+    await Zotero.Promise.delay(ms);
+    for (const observer of observers) observer.disconnect();
+    return count;
+  }
+
+  /** Wait until the conversation's newest answer is final and contains `text`. */
+  async function waitForAnswer(key: number, text: string): Promise<void> {
+    let last: unknown = null;
+    await until(
+      async () => {
+        const state = await api.readChatTurnLifecycle(key);
+        const assistant = [...state.memory]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        last = { requestPending: state.requestPending, assistant };
+        return (
+          !state.requestPending &&
+          Boolean(assistant) &&
+          assistant!.streaming !== true &&
+          String(assistant!.text || "").includes(text)
+        );
+      },
+      () =>
+        `conversation ${key} finishes an answer containing "${text}": ${JSON.stringify(last)}`,
+      30_000,
+    );
+  }
+
+  const isStreaming = (win: Window | null) =>
+    Boolean(rootOf(win)?.querySelector(".llm-bubble.assistant.streaming"));
+
+  // ── W18 ──────────────────────────────────────────────────────────────────
+
+  it("W18: pinning a paper in one window shows the pin in the other, and a later change in the other keeps it", async function () {
+    Zotero.Prefs.set(PINNED_PREF, "", true);
+    Zotero.Prefs.set(COLLAPSED_GROUPS_PREF, "", true);
+    try {
+      const { a, b, readerB, standalone } = await setupTornOnA("Torn W18");
+      const torn = tornWin()!;
+
+      // Pin A in the torn-off window: the standalone window lists it too.
+      clickPin(torn, "torn-off window");
+      await until(
+        () => pinnedPref().includes(a.parentItemId),
+        () => `the pref holds A's pin: ${JSON.stringify(pinnedPref())}`,
+      );
+      await until(
+        () => pinnedRows(standalone).includes(a.parentItemId),
+        () =>
+          `the standalone window lists A's pin: ${JSON.stringify({
+            standalone: pinnedRows(standalone),
+            torn: pinnedRows(torn),
+            pref: pinnedPref(),
+          })}`,
+      );
+      assert.equal(
+        pinButtonOf(standalone)?.getAttribute("aria-pressed"),
+        "true",
+        "the standalone window, also on A, shows A as pinned",
+      );
+      // A window does not redraw its lists again and again from its own
+      // write, or from the other window's.
+      const redraws = await countListMutations([standalone, torn], 800);
+      assert.equal(redraws, 0, "the lists stay still once the pin shows");
+
+      // Fold the Agent section in the standalone window: the pin stays, and
+      // the torn-off window folds it too.
+      const header = groupHeaderOf(standalone, "upstream");
+      assert.isOk(header, "the standalone window shows the Agent section");
+      header!.click();
+      await until(
+        () =>
+          String(Zotero.Prefs.get(COLLAPSED_GROUPS_PREF, true) || "").includes(
+            "upstream",
+          ),
+        () => "the pref holds the folded Agent section",
+      );
+      assert.deepEqual(
+        pinnedPref(),
+        [a.parentItemId],
+        "folding a section keeps the pin",
+      );
+      await until(
+        () =>
+          groupHeaderOf(tornWin(), "upstream")?.dataset.collapsed === "true",
+        () => "the torn-off window folds the Agent section too",
+      );
+
+      // Pin B in the standalone window: A's pin, made in the other window,
+      // is kept.
+      showReader(readerB);
+      await until(
+        () => stateOf(standalone).basePaperItemId === b.parentItemId,
+        () =>
+          `the standalone window follows the reader to B: ${JSON.stringify(stateOf(standalone))}`,
+      );
+      clickPin(standalone, "standalone window");
+      await until(
+        () => pinnedPref().includes(b.parentItemId),
+        () => `the pref holds B's pin: ${JSON.stringify(pinnedPref())}`,
+      );
+      assert.deepEqual(
+        pinnedPref(),
+        [a.parentItemId, b.parentItemId],
+        "pinning B in the standalone window keeps A's pin",
+      );
+      await until(
+        () =>
+          JSON.stringify(pinnedRows(tornWin())) ===
+          JSON.stringify([a.parentItemId, b.parentItemId]),
+        () =>
+          `the torn-off window lists both pins: ${JSON.stringify(pinnedRows(tornWin()))}`,
+      );
+
+      // Unpin A in the torn-off window: B's pin is kept in both.
+      const unpinA = torn.document.querySelector(
+        `.llm-standalone-pinned-paper[data-paper-item-id="${a.parentItemId}"] [data-action="unpin"]`,
+      ) as HTMLElement | null;
+      assert.isOk(unpinA, "the torn-off window offers Unpin on A");
+      unpinA!.click();
+      await until(
+        () =>
+          JSON.stringify(pinnedPref()) === JSON.stringify([b.parentItemId]) &&
+          JSON.stringify(pinnedRows(standalone)) ===
+            JSON.stringify([b.parentItemId]),
+        () =>
+          `only B stays pinned, in the pref and the standalone window: ${JSON.stringify(
+            { pref: pinnedPref(), standalone: pinnedRows(standalone) },
+          )}`,
+      );
+    } finally {
+      Zotero.Prefs.set(PINNED_PREF, "", true);
+      Zotero.Prefs.set(COLLAPSED_GROUPS_PREF, "", true);
+    }
+  });
+
+  // ── W19 ──────────────────────────────────────────────────────────────────
+
+  it("W19: a question asked in the torn-off window streams into the standalone window too", async function () {
+    const { key, standalone } = await setupTornOnA("Torn W19");
+    api.enableLiveAgentSending();
+    const stream = await startSharedConversationStream({
+      provider,
+      senderBody: () => bodyOf(tornWin()),
+      question: "Torn W19 shared question MIRROR-Q",
+    });
+    await until(
+      () =>
+        lastAssistantBubbleText(rootOf(standalone)).includes("MIRROR-PART-ONE"),
+      () =>
+        `the standalone window shows the partial answer: ${JSON.stringify(stateOf(standalone))}`,
+    );
+    stream.push("MIRROR-PART-TWO");
+    await until(
+      () =>
+        lastAssistantBubbleText(rootOf(standalone)).includes("MIRROR-PART-TWO"),
+      () =>
+        `the standalone window keeps receiving streamed text: ${lastAssistantBubbleText(rootOf(standalone))}`,
+    );
+    stream.finish();
+    await waitForAnswer(key, "MIRROR-PART-ONE MIRROR-PART-TWO");
+    await until(
+      () =>
+        !isStreaming(standalone) &&
+        !isStreaming(tornWin()) &&
+        lastAssistantBubbleText(rootOf(standalone)) ===
+          lastAssistantBubbleText(rootOf(tornWin())),
+      () =>
+        `both windows end with the same final answer: ${JSON.stringify({
+          standalone: lastAssistantBubbleText(rootOf(standalone)),
+          torn: lastAssistantBubbleText(rootOf(tornWin())),
+        })}`,
+    );
+    assert.include(
+      lastAssistantBubbleText(rootOf(standalone)),
+      "MIRROR-PART-ONE MIRROR-PART-TWO",
+    );
+  });
+
+  // ── W21 ──────────────────────────────────────────────────────────────────
+
+  it("W21: deleting the shown chat from the standalone window moves the torn-off window off it", async function () {
+    const { a, key, standalone } = await setupTornOnA("Torn W21");
+    // The plugin's warnings and errors reach Zotero.debug through its
+    // toolkit log, prefixed with the add-on name, at the "warn" level.
+    Zotero.Prefs.set(PREF_PREFIX + "logLevel", "warn", true);
+    const logged: string[] = [];
+    const originalDebug = Zotero.debug;
+    const originalLogError = Zotero.logError;
+    Zotero.debug = function (this: unknown, message: unknown, ...rest: any[]) {
+      const text = String(message ?? "");
+      if (text.startsWith("[llm-for-zotero]")) logged.push(text);
+      return originalDebug.call(this, message, ...rest);
+    };
+    Zotero.logError = function (this: unknown, error: unknown) {
+      logged.push(`logError: ${String(error)}`);
+      return originalLogError.call(this, error);
+    };
+    try {
+      await until(
+        () => Boolean(rowOf(standalone, key)),
+        () => `the standalone window lists chat ${key}`,
+      );
+      const remove = rowOf(standalone, key)!.querySelector(
+        ".llm-standalone-conv-delete",
+      ) as HTMLElement | null;
+      assert.isOk(remove, "the row offers Delete");
+      remove!.click();
+      await until(
+        async () =>
+          (
+            await api.getPendingDeletionState()
+          ).pendingConversationKeys.includes(key),
+        () => `the deletion of chat ${key} is queued`,
+      );
+      await until(
+        () => {
+          const torn = stateOf(tornWin());
+          return (
+            torn.conversationKey !== key &&
+            (torn.conversationKey === 0 ||
+              (torn.conversationKind === "paper" &&
+                torn.basePaperItemId === a.parentItemId))
+          );
+        },
+        () =>
+          `the torn-off window leaves the deleted chat for another chat of A: ${JSON.stringify(stateOf(tornWin()))}`,
+        15_000,
+      );
+      await until(
+        () => stateOf(standalone).conversationKey !== key,
+        () =>
+          `the standalone window leaves the deleted chat: ${JSON.stringify(stateOf(standalone))}`,
+      );
+      await Zotero.Promise.delay(800);
+      const torn = stateOf(tornWin());
+      assert.notEqual(torn.conversationKey, key, JSON.stringify(torn));
+      assert.notInclude(
+        torn.statusText,
+        "Cannot delete active conversation",
+        JSON.stringify(torn),
+      );
+      assert.notInclude(
+        listedConversationKeys(tornWin()),
+        key,
+        "the torn-off window's list drops the deleted chat",
+      );
+      assert.deepEqual(logged, [], "no warning or error is logged");
+    } finally {
+      Zotero.debug = originalDebug;
+      Zotero.logError = originalLogError;
+    }
+  });
+
+  // ── W20 ──────────────────────────────────────────────────────────────────
+
+  it("W20: closing the sending window mid-stream still delivers the final answer to the other", async function () {
+    const { key, standalone } = await setupTornOnA("Torn W20");
+    api.enableLiveAgentSending();
+    const stream = await startSharedConversationStream({
+      provider,
+      senderBody: () => bodyOf(tornWin()),
+      question: "Torn W20 shared question MIRROR-Q",
+    });
+    await until(
+      () =>
+        lastAssistantBubbleText(rootOf(standalone)).includes("MIRROR-PART-ONE"),
+      () =>
+        `the standalone window shows the partial answer: ${JSON.stringify(stateOf(standalone))}`,
+    );
+    const torn = tornWin()!;
+    torn.close();
+    await until(
+      () => torn.closed && api.getTornChatWindowsForTest().length === 0,
+      () => "the sending torn-off window closes",
+    );
+    await Zotero.Promise.delay(300);
+    assert.isFalse(
+      stream.aborted,
+      "closing the sending window does not abort the answer",
+    );
+    stream.push("MIRROR-PART-TWO");
+    stream.finish();
+    await waitForAnswer(key, "MIRROR-PART-ONE MIRROR-PART-TWO");
+    await until(
+      () =>
+        !isStreaming(standalone) &&
+        lastAssistantBubbleText(rootOf(standalone)).includes(
+          "MIRROR-PART-ONE MIRROR-PART-TWO",
+        ),
+      () =>
+        `the standalone window ends with the final answer: ${lastAssistantBubbleText(rootOf(standalone))}`,
+    );
+    const history = await api.getConversationHistoryTexts(key);
+    assert.isTrue(
+      history.stored.some(
+        (entry) =>
+          entry.role === "assistant" &&
+          entry.text.includes("MIRROR-PART-ONE MIRROR-PART-TWO"),
+      ),
+      `the final answer is stored: ${JSON.stringify(history.stored)}`,
+    );
   });
 });
