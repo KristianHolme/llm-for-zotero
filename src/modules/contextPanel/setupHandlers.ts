@@ -39,6 +39,7 @@ import { createNoteConversationItem } from "../../services/notes/conversationIte
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
 import { observeHistoryActivity } from "./historyActivity";
+import { isLivePanelBody } from "./panelLiveness";
 import { revealLocalPath } from "../../utils/revealLocalPath";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
@@ -9304,8 +9305,9 @@ export function setupHandlers(
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);
     // Rebuilding the root of a still-mounted body must retain its raw paper
-    // identity. A detached body, however, owns no surviving UI registration.
-    if (!body.isConnected) {
+    // identity. A detached body, or one whose window closed, owns no
+    // surviving UI registration.
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       releaseInlineEdit(body);
     }

@@ -176,6 +176,17 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   const stateOf = (win: Window | null) => readPanel(bodyOf(win));
 
+  /** The window's paper chips, as `paperItemId:paperContextItemId`. */
+  const chipKeys = (win: Window | null): string[] =>
+    Array.from(
+      bodyOf(win)?.querySelectorAll(
+        "#llm-paper-context-preview .llm-paper-context-chip",
+      ) || [],
+    ).map(
+      (chip: any) =>
+        `${chip.dataset.paperItemId}:${chip.dataset.paperContextItemId}`,
+    );
+
   async function until(
     check: () => boolean | Promise<boolean>,
     describe: () => string,
@@ -288,6 +299,13 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         stateOf(tornWin()).basePaperItemId === a.parentItemId,
       () =>
         `the torn-off window shows A's chat ${key}: ${JSON.stringify(stateOf(tornWin()))}`,
+    );
+    // The torn-off window paints its own paper's chip a little later; wait
+    // for it so callers start from a settled chip list.
+    await until(
+      () => chipKeys(tornWin()).some((k) => k.startsWith(`${a.parentItemId}:`)),
+      () =>
+        `the torn-off window shows A's own chip: ${JSON.stringify(chipKeys(tornWin()))}`,
     );
     // Compared with ===: chai cannot print a chrome window in a message.
     assert.isTrue(
@@ -1414,15 +1432,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     // window's panel, and the torn-off window must be the last to register.
     const c = await newPaper("Torn W16 C");
     const { standalone } = await setupTornOnA("Torn W16");
-    const chipKeys = (win: Window): string[] =>
-      Array.from(
-        bodyOf(win)?.querySelectorAll(
-          "#llm-paper-context-preview .llm-paper-context-chip",
-        ) || [],
-      ).map(
-        (chip: any) =>
-          `${chip.dataset.paperItemId}:${chip.dataset.paperContextItemId}`,
-      );
     const tornBefore = chipKeys(tornWin()!);
     const tornStateBefore = stateOf(tornWin());
     const standaloneKeyBefore = stateOf(standalone).conversationKey;
@@ -1439,6 +1448,10 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         `the chip appears in the standalone window: ${JSON.stringify(chipKeys(standaloneWin()!))} ${JSON.stringify(result.chipText)}`,
     );
     await Zotero.Promise.delay(500);
+    assert.isFalse(
+      chipKeys(tornWin()).some((k) => k.startsWith(`${c.parentItemId}:`)),
+      `the torn-off window gets no chip for C: ${JSON.stringify(chipKeys(tornWin()))}`,
+    );
     assert.deepEqual(
       chipKeys(tornWin()!),
       tornBefore,

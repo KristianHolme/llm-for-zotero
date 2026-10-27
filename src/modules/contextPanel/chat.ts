@@ -2,6 +2,7 @@ import { appLogger } from "../../core/logging";
 import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
+import { isLiveDocument, isLivePanelBody } from "./panelLiveness";
 export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
@@ -2070,7 +2071,7 @@ export function refreshActiveConversationPanels(
   conversationKey?: number,
 ): void {
   for (const [body, getItem] of activeContextPanels) {
-    if (!(body as Element).isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       continue;
     }
@@ -3784,7 +3785,7 @@ function visitConversationPanelBodies(
   ) => {
     if (visited.has(body)) return;
     visited.add(body);
-    if (!body.isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       return;
     }
@@ -4100,7 +4101,7 @@ function createStreamUsageHandler(params: {
       fallbackContextWindow: params.fallbackContextWindow,
       fallbackInputLimitSource: params.fallbackInputLimitSource,
     });
-    if (!snapshot) return;
+    if (!snapshot || !isLivePanelBody(params.body)) return;
     renderContextUsageSnapshot(params.body, params.tokenUsageEl, snapshot);
   };
 }
@@ -4964,7 +4965,9 @@ function createQueuedRefresh(
       body?.ownerDocument?.defaultView || Zotero.getMainWindow?.(),
     run: () => {
       if (body) queuedPanelRefreshes.get(body)?.delete(scheduler);
-      if (!body || body.isConnected) refresh();
+      // A closed sender still runs the refresh: it skips the dead body and
+      // keeps the other panels showing the conversation up to date.
+      refresh();
     },
   });
   const schedule = () => {
@@ -10781,7 +10784,7 @@ export function refreshChat(
 ) {
   renderChatForPanel(body, item, options);
   const afterRender = getChatPanelExtensions(body)?.afterRender;
-  if (!afterRender) return;
+  if (!afterRender || !isLiveDocument(body.ownerDocument)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   try {
@@ -10796,6 +10799,8 @@ function renderChatForPanel(
   item?: Zotero.Item | null,
   options: RefreshChatOptions = {},
 ) {
+  // A closed window's body draws nothing (writing into it crashes Zotero).
+  if (!isLiveDocument(body.ownerDocument)) return;
   if (item && !isPanelConversationCurrent(body, item)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
@@ -12947,7 +12952,7 @@ function renderChatForPanel(
       clearPendingChatRender(chatBox, pending);
     };
     const isStillShown = () =>
-      chatBox.isConnected &&
+      isLivePanelBody(chatBox) &&
       Number(panelRoot?.dataset.itemId || 0) === conversationKey;
     const drawWaiting = (budgetMs: number) => {
       frameHandle = null;
@@ -13105,6 +13110,9 @@ export function refreshConversationPanels(
   const conversationKey = getConversationKey(primaryItem);
   const refreshedPanels = new Set<Element>();
   const refreshOne = (body: Element, item: Zotero.Item) => {
+    // A closed sending window is skipped (the loop below unregisters it);
+    // the panels that remain still get every chunk and the final answer.
+    if (!isLivePanelBody(body)) return;
     if (!isPanelConversationCurrent(body, item)) return;
     const chatBox = body.querySelector(
       "#llm-chat-box",
@@ -13129,7 +13137,7 @@ export function refreshConversationPanels(
   refreshOne(primaryBody, primaryItem);
 
   for (const [body, getItem] of activeContextPanels.entries()) {
-    if (!(body as Element).isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       continue;
     }

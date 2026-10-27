@@ -1,6 +1,7 @@
 import { withChatContentScrollGuard } from "./chatScrollSnapshots";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import { copyFlatContentScope } from "./contentChrome";
+import { isLiveDocument } from "./panelLiveness";
 import { splitSettledMarkdownBlocks } from "../../utils/markdown";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 
@@ -43,7 +44,14 @@ export function renderStreamingMarkdownInto(
     next.scheduler = createCoalescedFrameScheduler({
       getWindow: () => doc.defaultView,
       run: () => {
-        if (!target.isConnected || streams.get(target) !== next) return;
+        // A closed window's target still reports isConnected; drawing into
+        // its document crashes Zotero.
+        if (
+          !target.isConnected ||
+          !isLiveDocument(doc) ||
+          streams.get(target) !== next
+        )
+          return;
         // Prepare off-DOM so a budget yield never exposes committed blocks
         // alongside the previous tail, or clears a restarted stream early.
         const now = () => doc.defaultView?.performance.now() ?? Date.now();

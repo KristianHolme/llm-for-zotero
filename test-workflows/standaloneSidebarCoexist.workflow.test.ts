@@ -918,6 +918,55 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     );
   });
 
+  it("T3z: closing the sending standalone window mid-stream still delivers the final answer to the sidebar", async function () {
+    const { key, stream } = await startWindowStreamOnSidebarChat("Coexist T3z");
+    await showConversationInSidebar(key);
+    await until(
+      () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-ONE"),
+      () =>
+        `the sidebar shows the partial answer started in the window: ${JSON.stringify(sidebarState())}`,
+    );
+    // The user closes the sending window itself, as with its close button.
+    const win = standaloneWin()!;
+    win.close();
+    await until(
+      () => win.closed && !standaloneWin(),
+      () => "the sending standalone window closes",
+    );
+    await Zotero.Promise.delay(300);
+    assert.isFalse(
+      stream.aborted,
+      "closing the sending window does not abort the answer",
+    );
+    stream.push("MIRROR-PART-TWO");
+    await until(
+      () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-TWO"),
+      () =>
+        `the sidebar keeps receiving streamed text: ${JSON.stringify(sidebarState())}`,
+    );
+    stream.finish();
+    await waitForAnswer(key, "MIRROR-PART-ONE MIRROR-PART-TWO");
+    await until(
+      () =>
+        !sidebarRoot()?.querySelector(".llm-bubble.assistant.streaming") &&
+        lastAssistantBubbleText(sidebarRoot()).includes(
+          "MIRROR-PART-ONE MIRROR-PART-TWO",
+        ),
+      () =>
+        `the sidebar ends with the final answer: ${lastAssistantBubbleText(sidebarRoot())}`,
+    );
+    const stored = await history(key);
+    assert.isTrue(
+      stored.stored.some(
+        (entry) =>
+          entry.role === "assistant" &&
+          entry.text.includes("MIRROR-PART-ONE MIRROR-PART-TWO"),
+      ),
+      `the final answer is stored: ${JSON.stringify(stored.stored)}`,
+    );
+    assertSidebarLive("after the sending window closed");
+  });
+
   // ── T4 ───────────────────────────────────────────────────────────────────
 
   it("T4: closing the window leaves the sidebar panel, its draft and its scroll untouched", async function () {
