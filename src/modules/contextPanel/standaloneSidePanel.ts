@@ -145,7 +145,7 @@ import {
 } from "./state";
 import {
   resetSideSurfaceChoices,
-  startSideSurfaceChoicesFromStandalone,
+  startSideSurfaceChoices,
 } from "./surfaceChoices";
 import { setNeutralStatus, setStatus } from "./textUtils";
 import { copyTextToClipboard } from "./clipboard";
@@ -1638,11 +1638,11 @@ export function createStandaloneSidePanel(
         ? createPaperPortalItem(view.basePaperItem, conversationKey, 1)
         : createGlobalPortalItem(context.libraryID, conversationKey);
     view.item = item;
-    markSidePanelBody(body);
+    markSidePanelBody(body, undefined, "side");
     const panelRoot = mountPanelShell({
       body,
       renderItem: item,
-      beforeRegister: () => markSidePanelBody(body, item),
+      beforeRegister: () => markSidePanelBody(body, item, "side"),
       getMountedItem: () => item,
       rawItem: context.kind === "paper" ? view.basePaperItem : null,
       setupItem: item,
@@ -1733,7 +1733,9 @@ export function createStandaloneSidePanel(
     viewHost.appendChild(root);
     // The first side chat starts from the window's model and reasoning
     // choices; later ones share the side chats' choices.
-    if (!sideChatViews().length) startSideSurfaceChoicesFromStandalone();
+    if (!sideChatViews().length) {
+      startSideSurfaceChoices("side", "standalone");
+    }
     const { tab, tabTitle } = createTab(id, "sidechat", t("Side chat"));
     const view: SideChatTabView = {
       kind: "sidechat",
@@ -3492,7 +3494,7 @@ export function createStandaloneSidePanel(
         sideChatSlashItem: undefined,
         sideChatQuote: undefined,
       });
-      resetSideSurfaceChoices();
+      resetSideSurfaceChoices("side");
     },
   };
 }

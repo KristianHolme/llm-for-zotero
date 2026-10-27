@@ -80,7 +80,12 @@ export const selectedReasoningProviderCache = new Map<
 
 // The same values as conversationSelection's SelectionSurface, spelled out
 // here because that module imports this one.
-type ReasoningSurface = "embedded" | "standalone" | "side";
+type ReasoningSurface =
+  | "embedded"
+  | "standalone"
+  | "side"
+  | `side:${string}`
+  | `torn:${string}`;
 
 export function reasoningCacheKey(
   surface: ReasoningSurface | undefined,
@@ -89,17 +94,18 @@ export function reasoningCacheKey(
   return `${surface || "embedded"}:${itemId}`;
 }
 
-/** Forget one surface's reasoning choices; the other surface keeps its own. */
+/** Forget one surface's reasoning choices; the other surfaces keep their own. */
 export function clearSelectedReasoningForSurface(
   surface: ReasoningSurface | undefined,
 ): void {
-  const prefix = `${surface || "embedded"}:`;
+  // Match the whole surface name: "side" must not match "side:1:<item>".
+  const name = surface || "embedded";
   for (const cache of [
     selectedReasoningCache,
     selectedReasoningProviderCache,
   ]) {
     for (const key of Array.from(cache.keys())) {
-      if (key.startsWith(prefix)) cache.delete(key);
+      if (key.slice(0, key.lastIndexOf(":")) === name) cache.delete(key);
     }
   }
 }
@@ -410,6 +416,13 @@ export function clearConversationOwnedRuntimeState(
       standalonePaperConversationByPaper.delete(stateKey);
     }
   }
+  for (const tornMap of [tornGlobalByLibrary, tornPaperByPaper]) {
+    for (const [stateKey, activeKey] of tornMap) {
+      if (normalizeConversationKey(activeKey) === key) {
+        tornMap.delete(stateKey);
+      }
+    }
+  }
 
   clearMenuTargetsForConversation(key);
   // The finalizer may run without a mounted panel, so the panels' DOM cleanup
@@ -695,6 +708,13 @@ export const standaloneConversationModeByLibrary = new Map<
 export const standaloneGlobalConversationByLibrary = new Map<string, number>();
 export const standalonePaperConversationByPaper = new Map<string, number>();
 
+// Each torn-off chat window's own selection, like the standalone window's
+// above. Keys are "<torn surface>|<system>|<runtime state key>"; nothing here
+// is ever persisted. Read and written only through conversationSelection.ts.
+export const tornModeByLibrary = new Map<string, "paper" | "global">();
+export const tornGlobalByLibrary = new Map<string, number>();
+export const tornPaperByPaper = new Map<string, number>();
+
 // ── Auto-lock state (open chat locks during generation) ─────────────────────
 // Multiple conversations can be auto-locked simultaneously.
 const autoLockedGlobalConversationKeys = new Set<number>();
@@ -760,6 +780,9 @@ export function clearAllState(): void {
   standaloneConversationModeByLibrary.clear();
   standaloneGlobalConversationByLibrary.clear();
   standalonePaperConversationByPaper.clear();
+  tornModeByLibrary.clear();
+  tornGlobalByLibrary.clear();
+  tornPaperByPaper.clear();
   const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
   for (const key of pendingKeys) notifyRequestActivityChanged(key, true);

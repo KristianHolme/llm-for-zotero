@@ -217,7 +217,11 @@ import {
   requireCurrentPanelOwnership,
   resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
-import type { SelectionSurface } from "./conversationSelection";
+import {
+  isSideSurface,
+  type SelectionSurface,
+  type TornSurface,
+} from "./conversationSelection";
 import {
   getSelectedModelEntryForSurface,
   surfaceChoices,
@@ -592,23 +596,24 @@ export function hasAgentRunTraceForTests(runId: string): boolean {
 
 /**
  * The surface showing `item`, for paths that act for a panel but were handed
- * only its item. Both surfaces can show the same item object; the window's
- * choices apply only when no sidebar panel shows it.
+ * only its item. Several surfaces can show the same item object; a window's
+ * choices apply only when no sidebar panel shows it, and the standalone
+ * window's when it and a torn window both do.
  */
 function resolveSurfaceForMountedItem(
   item: Zotero.Item | null | undefined,
 ): SelectionSurface {
   if (!item) return "embedded";
-  let shownInWindow = false;
+  let shownInWindow: "standalone" | TornSurface | null = null;
   for (const [body, getItem] of activeContextPanels) {
     if (getItem() !== item) continue;
     const surface = resolveSelectionSurfaceForBody(body);
     if (surface === "embedded") return "embedded";
-    // The side chat shows its own ephemeral item, never another surface's.
-    if (surface === "side") return "side";
-    shownInWindow = true;
+    // A side chat shows its own ephemeral item, never another surface's.
+    if (isSideSurface(surface)) return surface;
+    if (surface === "standalone" || !shownInWindow) shownInWindow = surface;
   }
-  return shownInWindow ? "standalone" : "embedded";
+  return shownInWindow || "embedded";
 }
 
 /**

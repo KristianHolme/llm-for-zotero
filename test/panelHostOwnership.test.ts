@@ -11,6 +11,7 @@ import {
   bindStandalonePanelHost,
   clearPanelHostBinding,
   evaluatePanelOwnership,
+  getPanelHostBinding,
   isPanelHostCompatibleWithPaper,
   isSidePanelBody,
   markSidePanelBody,
@@ -371,6 +372,18 @@ describe("panel host ownership", function () {
     bindStandalonePanelHost(window.body, paper);
     assert.equal(resolveSelectionSurfaceForBody(window.body), "standalone");
     assert.equal(resolveSelectionSurfaceForBody(null), "embedded");
+    assert.equal(
+      getPanelHostBinding(library.body)?.selectionSurface,
+      "embedded",
+    );
+    assert.equal(
+      getPanelHostBinding(reader.body)?.selectionSurface,
+      "embedded",
+    );
+    assert.equal(
+      getPanelHostBinding(window.body)?.selectionSurface,
+      "standalone",
+    );
     for (const panel of [library, reader, window]) {
       clearPanelHostBinding(panel.body);
     }
@@ -404,6 +417,66 @@ describe("panel host ownership", function () {
     assert.equal(evaluatePanelOwnership(side.body), "match");
     assert.isTrue(isPanelHostCompatibleWithPaper(side.body, paperB));
     assert.equal(resolveSelectionSurfaceForBody(window.body), "standalone");
+    assert.equal(getPanelHostBinding(side.body)?.selectionSurface, "side");
+    clearPanelHostBinding(side.body);
+  });
+
+  it("a standalone body bound with a torn surface resolves to that surface and passes ownership", function () {
+    const paperA = fakePaper(101);
+    const paperB = fakePaper(202);
+    const torn = fakePanel({
+      conversationKey: 202,
+      paperItemID: 202,
+      standalone: true,
+    });
+    bindStandalonePanelHost(torn.body, paperA, "torn:3");
+    activeContextPanels.set(torn.body, () => paperB);
+    assert.equal(resolveSelectionSurfaceForBody(torn.body), "torn:3");
+    assert.equal(evaluatePanelOwnership(torn.body), "match");
+    assert.equal(evaluatePanelOwnership(torn.body, paperB), "match");
+    assert.isTrue(isPanelHostCompatibleWithPaper(torn.body, paperB));
+    assert.isFalse(isSidePanelBody(torn.body));
+    const generation = getPanelHostBinding(torn.body)?.generation || 0;
+    // The same target under another surface is a new host.
+    bindStandalonePanelHost(torn.body, paperA);
+    assert.equal(resolveSelectionSurfaceForBody(torn.body), "standalone");
+    assert.equal(getPanelHostBinding(torn.body)?.generation, generation + 1);
+    clearPanelHostBinding(torn.body);
+  });
+
+  it("reads a declared selection surface before any binding exists", function () {
+    const torn = fakePanel({
+      conversationKey: 101,
+      paperItemID: 101,
+      standalone: true,
+    });
+    torn.root.dataset.selectionSurface = "torn:4";
+    assert.equal(resolveSelectionSurfaceForBody(torn.body), "torn:4");
+    // A value that names no surface falls back to the data-standalone rule.
+    for (const invalid of ["torn:", "nonsense", "side:"]) {
+      torn.root.dataset.selectionSurface = invalid;
+      assert.equal(resolveSelectionSurfaceForBody(torn.body), "standalone");
+    }
+    const library = fakePanel({ conversationKey: 101, paperItemID: 101 });
+    library.root.dataset.selectionSurface = "bogus";
+    assert.equal(resolveSelectionSurfaceForBody(library.body), "embedded");
+  });
+
+  it("puts a torn window's side chat on its own side surface", function () {
+    const paper = fakePaper(101);
+    const side = fakePanel({
+      conversationKey: 1_900_000_002,
+      paperItemID: 101,
+    });
+    markSidePanelBody(side.body, undefined, "side:4");
+    assert.isTrue(isSidePanelBody(side.body));
+    assert.equal(resolveSelectionSurfaceForBody(side.body), "side:4");
+    assert.equal(evaluatePanelOwnership(side.body), "match");
+    markSidePanelBody(side.body, paper, "side:4");
+    assert.equal(getPanelHostBinding(side.body)?.surface, "side");
+    assert.equal(getPanelHostBinding(side.body)?.selectionSurface, "side:4");
+    assert.equal(resolveSelectionSurfaceForBody(side.body), "side:4");
+    assert.isTrue(isSidePanelBody(side.body));
     clearPanelHostBinding(side.body);
   });
 });

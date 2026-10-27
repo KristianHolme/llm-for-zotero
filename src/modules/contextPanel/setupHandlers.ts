@@ -777,7 +777,7 @@ export function setupHandlers(
     activeContextPanelRawItems.get(body) || initialItem || null;
   if (__env__ !== "production" && !getPanelHostBinding(body)) {
     if (isSidePanel) {
-      bindSidePanelHost(body, rawPanelItem);
+      bindSidePanelHost(body, rawPanelItem, "side");
     } else if (existingPanelRoot?.dataset.standalone === "true") {
       bindStandalonePanelHost(body, rawPanelItem);
     } else {

@@ -10,7 +10,13 @@ import {
 import { COMPOSER_BOUND_KEYS } from "./composerKeyBindings";
 import { getConversationKey } from "./conversationIdentity";
 import type { ConversationSystem } from "../../shared/types";
-import type { SelectionSurface } from "./conversationSelection";
+import {
+  isSideSurface,
+  parseSelectionSurface,
+  type SelectionSurface,
+  type SideSurface,
+  type TornSurface,
+} from "./conversationSelection";
 
 export type PanelHostSurface = "reader" | "library" | "standalone" | "side";
 
@@ -23,6 +29,8 @@ export type PanelHostBinding = {
   basePaperItemID: number;
   noteID: number;
   noteParentItemID: number;
+  /** The selection surface the panel reads and writes (conversationSelection.ts). */
+  selectionSurface: SelectionSurface;
   generation: number;
 };
 
@@ -108,6 +116,7 @@ function buildHostIdentity(binding: PanelHostBinding): string {
     binding.basePaperItemID,
     binding.noteID,
     binding.noteParentItemID,
+    binding.selectionSurface,
   ].join("|");
 }
 
@@ -132,6 +141,7 @@ function buildLifecycleBinding(
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: normalizePositiveInt(note?.noteId),
     noteParentItemID: normalizePositiveInt(note?.parentItemId),
+    selectionSurface: "embedded",
   };
 }
 
@@ -163,10 +173,14 @@ export function bindEmbeddedPanelHost(
   return commitHostBinding(body, buildLifecycleBinding(body, item, tabType));
 }
 
-/** The standalone mount controller deliberately owns its changing target. */
+/**
+ * The standalone mount controller deliberately owns its changing target. A
+ * torn-off window binds the same way under its own selection surface.
+ */
 export function bindStandalonePanelHost(
   body: Element,
   item: Zotero.Item | null | undefined,
+  selectionSurface: "standalone" | TornSurface = "standalone",
 ): PanelHostBinding {
   const note = resolveActiveNoteSession(item);
   return commitHostBinding(body, {
@@ -178,16 +192,18 @@ export function bindStandalonePanelHost(
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: normalizePositiveInt(note?.noteId),
     noteParentItemID: normalizePositiveInt(note?.parentItemId),
+    selectionSurface,
   });
 }
 
 /**
- * The standalone window's temporary side chat. Like the window's own panel,
- * its mount controller owns its changing target, so any scope belongs to it.
+ * A window's temporary side chat. Like the window's own panel, its mount
+ * controller owns its changing target, so any scope belongs to it.
  */
 export function bindSidePanelHost(
   body: Element,
   item: Zotero.Item | null | undefined,
+  sideSurface: SideSurface = "side",
 ): PanelHostBinding {
   return commitHostBinding(body, {
     surface: "side",
@@ -198,15 +214,18 @@ export function bindSidePanelHost(
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: 0,
     noteParentItemID: 0,
+    selectionSurface: sideSurface,
   });
 }
 
 /**
- * The one way a panel body declares itself the window's side chat. It sets
+ * The one way a panel body declares itself a window's side chat. It sets
  * `data-side-panel` (and `data-standalone`, so it looks like the window's
- * panel) on the body and on its `#llm-main` root when that exists, and, given
- * the mounted item, binds the side host. A side body:
- * - resolves to the "side" selection surface (no slot, no pref writes);
+ * panel) and `data-selection-surface` on the body and on its `#llm-main` root
+ * when that exists, and, given the mounted item, binds the side host. A side
+ * body:
+ * - resolves to its side selection surface ("side" for the standalone
+ *   window's, "side:<id>" for a torn window's; no slot, no pref writes);
  * - passes panel ownership like the window's panel;
  * - does not restore a paper conversation on mount;
  * - never registers as a Zotero "Add as context" target.
@@ -215,6 +234,7 @@ export function bindSidePanelHost(
 export function markSidePanelBody(
   body: Element,
   item?: Zotero.Item | null,
+  sideSurface: SideSurface = "side",
 ): void {
   const marked = [
     body as HTMLElement,
@@ -224,8 +244,9 @@ export function markSidePanelBody(
     if (!element?.dataset) continue;
     element.dataset.standalone = "true";
     element.dataset.sidePanel = "true";
+    element.dataset.selectionSurface = sideSurface;
   }
-  if (item !== undefined) bindSidePanelHost(body, item);
+  if (item !== undefined) bindSidePanelHost(body, item, sideSurface);
 }
 
 /** Whether a body (or its panel root) was marked by markSidePanelBody. */
@@ -257,22 +278,43 @@ export function getPanelHostBinding(
   return hostBindings.get(body);
 }
 
+/** The surface a body or its panel root declares in `data-selection-surface`. */
+function readDeclaredSelectionSurface(body: Element): SelectionSurface | null {
+  const root = body.querySelector?.("#llm-main") as HTMLElement | null;
+  return (
+    parseSelectionSurface((body as HTMLElement).dataset?.selectionSurface) ||
+    parseSelectionSurface(root?.dataset?.selectionSurface)
+  );
+}
+
 /**
  * The selection surface a panel body reads and writes (see
- * conversationSelection.ts): the standalone window's panel is "standalone";
- * the window's side chat (markSidePanelBody) is "side"; every sidebar panel —
- * library item pane or reader tab — is "embedded". The side marker decides
- * first; then the host binding once it exists; before that, the window marks
- * its content area and panel root with `data-standalone`.
+ * conversationSelection.ts): the standalone window's panel is "standalone"; a
+ * torn-off window's is its "torn:<id>"; a window's side chat
+ * (markSidePanelBody) is "side" or "side:<id>"; every sidebar panel — library
+ * item pane or reader tab — is "embedded". The side marker decides first;
+ * then the host binding once it exists; before that, the surface the body or
+ * its panel root declares in `data-selection-surface`, and last the window's
+ * `data-standalone` mark on its content area and panel root.
  */
 export function resolveSelectionSurfaceForBody(
   body: Element | null | undefined,
 ): SelectionSurface {
   if (!body) return "embedded";
-  if (isSidePanelBody(body)) return "side";
   const binding = hostBindings.get(body);
-  if (binding)
-    return binding.surface === "standalone" ? "standalone" : "embedded";
+  if (isSidePanelBody(body)) {
+    if (
+      binding?.surface === "side" &&
+      isSideSurface(binding.selectionSurface)
+    ) {
+      return binding.selectionSurface;
+    }
+    const declared = readDeclaredSelectionSurface(body);
+    return declared && isSideSurface(declared) ? declared : "side";
+  }
+  if (binding) return binding.selectionSurface;
+  const declared = readDeclaredSelectionSurface(body);
+  if (declared) return declared;
   if ((body as HTMLElement).dataset?.standalone === "true") return "standalone";
   const root = body.querySelector?.("#llm-main") as HTMLElement | null;
   return root?.dataset?.standalone === "true" ? "standalone" : "embedded";
