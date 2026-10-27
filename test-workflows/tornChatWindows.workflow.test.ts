@@ -3,6 +3,10 @@ import {
   getModelEntryById,
   setModelProviderGroups,
 } from "../src/utils/modelProviders";
+import {
+  TEAR_OFF_MIME,
+  decodeTornChatIdentity,
+} from "../src/modules/contextPanel/tearOffDrag";
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
@@ -937,5 +941,395 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.isTrue(shown(torn), "the icon shows again in Paper chat");
 
     assert.isNull(iconOf(standalone), "the standalone window has no icon");
+  });
+
+  // ── Tear-off gesture and row menu ────────────────────────────────────────
+
+  type ScreenRect = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+
+  /** Every open Zotero or plugin window, as the drag handler reads them. */
+  function openWindowRects(): ScreenRect[] {
+    const services =
+      (globalThis as any).Services || (mainWin() as any).Services;
+    const rects: ScreenRect[] = [];
+    const enumerator = services.wm.getEnumerator(null);
+    while (enumerator.hasMoreElements()) {
+      const win = enumerator.getNext() as any;
+      if (!win || win.closed) continue;
+      rects.push({
+        left: win.screenX,
+        top: win.screenY,
+        width: win.outerWidth,
+        height: win.outerHeight,
+      });
+    }
+    return rects;
+  }
+
+  /** A screen point right of every open window. */
+  function pointOutsideEveryWindow(): { screenX: number; screenY: number } {
+    const rects = openWindowRects();
+    const right = Math.max(...rects.map((rect) => rect.left + rect.width));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    return { screenX: right + 200, screenY: top + 40 };
+  }
+
+  const listRows = (win: Window | null): HTMLElement[] =>
+    Array.from(
+      win?.document.querySelectorAll(
+        ".llm-standalone-sidebar-list .llm-standalone-conv-item",
+      ) || [],
+    ) as HTMLElement[];
+
+  const rowOf = (win: Window | null, key: number): HTMLElement | null =>
+    listRows(win).find((row) => toKey(row.dataset.conversationKey) === key) ||
+    null;
+
+  const titleOf = (win: Window): HTMLElement | null =>
+    win.document.querySelector(
+      ".llm-standalone-content-title-text",
+    ) as HTMLElement | null;
+
+  const convMenuOf = (win: Window): HTMLElement | null =>
+    win.document.querySelector(
+      ".llm-standalone-conv-ctx-menu",
+    ) as HTMLElement | null;
+
+  const isConvMenuShown = (win: Window): boolean => {
+    const menu = convMenuOf(win);
+    return Boolean(menu && menu.style.display !== "none");
+  };
+
+  /** Dispatches a synthetic dragstart on `source`; returns its DataTransfer. */
+  function startDrag(win: Window, source: HTMLElement): DataTransfer {
+    const transfer = new (win as any).DataTransfer() as DataTransfer;
+    source.dispatchEvent(
+      new (win as any).DragEvent("dragstart", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }),
+    );
+    return transfer;
+  }
+
+  /** Ends the drag on `source` at a screen point. */
+  function endDrag(
+    win: Window,
+    source: HTMLElement,
+    transfer: DataTransfer,
+    point: { screenX: number; screenY: number },
+  ): void {
+    source.dispatchEvent(
+      new (win as any).DragEvent("dragend", {
+        bubbles: true,
+        dataTransfer: transfer,
+        screenX: point.screenX,
+        screenY: point.screenY,
+      }),
+    );
+  }
+
+  function openRowMenu(win: Window, row: HTMLElement): void {
+    const rect = row.getBoundingClientRect();
+    row.dispatchEvent(
+      new (win as any).MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: rect.left + 10,
+        clientY: rect.top + rect.height / 2,
+      }),
+    );
+  }
+
+  /**
+   * Paper A's chat (one stored turn) in the standalone window, listed in
+   * its sidebar.
+   */
+  async function setupStandaloneOnA(title: string) {
+    const a = await newPaper(`${title} A`);
+    await api.openStandaloneForItem(a.parentItemId);
+    await until(
+      () =>
+        stateOf(standaloneWin()).conversationKind === "paper" &&
+        stateOf(standaloneWin()).basePaperItemId === a.parentItemId &&
+        stateOf(standaloneWin()).conversationKey > 0,
+      () =>
+        `the standalone window shows A's paper chat: ${JSON.stringify(stateOf(standaloneWin()))}`,
+    );
+    await api.seedStandaloneConversation([
+      { role: "user", text: `${title} seed question` },
+      { role: "assistant", text: `${title} seed answer` },
+    ]);
+    const key = stateOf(standaloneWin()).conversationKey;
+    await until(
+      () => Boolean(rowOf(standaloneWin(), key)),
+      () =>
+        `the standalone window lists A's chat ${key}: ${JSON.stringify(listedConversationKeys(standaloneWin()))}`,
+    );
+    return { a, key, standalone: standaloneWin()! };
+  }
+
+  // ── W11 ──────────────────────────────────────────────────────────────────
+
+  it("W11: dragging a list row out of every window opens a torn-off window on that chat", async function () {
+    const { a, key, standalone } = await setupStandaloneOnA("Torn W11");
+    const row = rowOf(standalone, key)!;
+    assert.equal(row.getAttribute("draggable"), "true", "the row is draggable");
+    assert.equal(
+      titleOf(standalone)?.getAttribute("draggable"),
+      "true",
+      "the chat title is draggable in Paper chat",
+    );
+
+    const transfer = startDrag(standalone, row);
+    assert.deepEqual(
+      Array.from(transfer.types),
+      [TEAR_OFF_MIME],
+      "the drag carries only the plugin's own type",
+    );
+    assert.equal(transfer.effectAllowed, "move");
+    assert.deepEqual(decodeTornChatIdentity(transfer.getData(TEAR_OFF_MIME)), {
+      system: "upstream",
+      conversationKey: key,
+      kind: "paper",
+      libraryID: Number(Zotero.Libraries.userLibraryID),
+      paperItemID: a.parentItemId,
+    });
+    assert.equal(transfer.dropEffect, "none", "no target took the drag");
+
+    endDrag(standalone, row, transfer, pointOutsideEveryWindow());
+    await until(
+      () =>
+        api.getTornChatWindowsForTest().length === 1 &&
+        stateOf(tornWin()).conversationKey === key,
+      () =>
+        `one torn-off window opens on chat ${key}: ${JSON.stringify({
+          windows: api.getTornChatWindowsForTest().length,
+          state: stateOf(tornWin()),
+        })}`,
+      15_000,
+    );
+    assertTornOnA("after the tear-off drag", {
+      key,
+      paperId: a.parentItemId,
+    });
+    assert.isTrue(
+      standaloneWin() === standalone,
+      "the standalone window stays the session window",
+    );
+    assert.equal(
+      stateOf(standalone).conversationKey,
+      key,
+      "the standalone window still shows its chat",
+    );
+
+    // The torn-off window's own rows are drag sources too.
+    await until(
+      () => rowOf(tornWin(), key)?.getAttribute("draggable") === "true",
+      () =>
+        `the torn-off window lists a draggable row for chat ${key}: ${JSON.stringify(listedConversationKeys(tornWin()))}`,
+    );
+  });
+
+  // ── W12 ──────────────────────────────────────────────────────────────────
+
+  it("W12: a drag that ends inside a window opens nothing", async function () {
+    const { key, standalone } = await setupStandaloneOnA("Torn W12");
+    const row = rowOf(standalone, key)!;
+
+    let transfer = startDrag(standalone, row);
+    endDrag(standalone, row, transfer, {
+      screenX: standalone.screenX + Math.round(standalone.outerWidth / 2),
+      screenY: standalone.screenY + Math.round(standalone.outerHeight / 2),
+    });
+
+    // A drag some target accepted opens nothing either, wherever it ends.
+    const accepted = rowOf(standalone, key)!;
+    transfer = startDrag(standalone, accepted);
+    transfer.dropEffect = "move";
+    endDrag(standalone, accepted, transfer, pointOutsideEveryWindow());
+
+    // The title dropped back on its own window opens nothing.
+    const title = titleOf(standalone)!;
+    transfer = startDrag(standalone, title);
+    assert.deepEqual(Array.from(transfer.types), [TEAR_OFF_MIME]);
+    endDrag(standalone, title, transfer, {
+      screenX: standalone.screenX + 20,
+      screenY: standalone.screenY + 20,
+    });
+
+    await Zotero.Promise.delay(1000);
+    assert.lengthOf(
+      api.getTornChatWindowsForTest(),
+      0,
+      "no torn-off window opened",
+    );
+    assert.equal(stateOf(standalone).conversationKey, key);
+  });
+
+  // ── W13 ──────────────────────────────────────────────────────────────────
+
+  it("W13: right-click Open in New Window opens a torn-off window", async function () {
+    const { a, key, standalone } = await setupStandaloneOnA("Torn W13");
+    const row = rowOf(standalone, key)!;
+    openRowMenu(standalone, row);
+    assert.isTrue(isConvMenuShown(standalone), "the row menu opens");
+    const items = Array.from(
+      convMenuOf(standalone)!.querySelectorAll("button"),
+    ) as HTMLButtonElement[];
+    assert.deepEqual(
+      items.map((item) => textOf(item)),
+      ["Open in New Window"],
+      "the menu has one item",
+    );
+    items[0].click();
+    assert.isFalse(isConvMenuShown(standalone), "the menu closes");
+    await until(
+      () =>
+        api.getTornChatWindowsForTest().length === 1 &&
+        stateOf(tornWin()).conversationKey === key,
+      () =>
+        `one torn-off window opens on chat ${key}: ${JSON.stringify(stateOf(tornWin()))}`,
+      15_000,
+    );
+    assertTornOnA("after Open in New Window", {
+      key,
+      paperId: a.parentItemId,
+    });
+    assert.equal(stateOf(standalone).conversationKey, key);
+
+    // Escape closes the menu without opening anything.
+    openRowMenu(standalone, rowOf(standalone, key)!);
+    assert.isTrue(isConvMenuShown(standalone));
+    standalone.document.dispatchEvent(
+      new (standalone as any).KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+      }),
+    );
+    assert.isFalse(isConvMenuShown(standalone), "Escape closes the menu");
+    assert.lengthOf(api.getTornChatWindowsForTest(), 1);
+  });
+
+  // ── W14 ──────────────────────────────────────────────────────────────────
+
+  it("W14: WebChat rows and note chats are not draggable and have no Open in New Window item", async function () {
+    // A note chat.
+    const note = await api.createStandaloneNoteFixture({
+      noteHtml: "<p>Torn W14 note</p><p>Body.</p>",
+    });
+    fixtures.push(note as unknown as WorkflowTestFixture);
+    await api.openStandaloneForItem(note.noteItemId);
+    await until(
+      () => stateOf(standaloneWin()).conversationKey > 0,
+      () =>
+        `the standalone window shows the note chat: ${JSON.stringify(stateOf(standaloneWin()))}`,
+    );
+    await api.seedStandaloneConversation([
+      { role: "user", text: "Torn W14 note question" },
+      { role: "assistant", text: "Torn W14 note answer" },
+    ]);
+    let standalone = standaloneWin()!;
+    const noteKey = stateOf(standalone).conversationKey;
+    await until(
+      () => Boolean(rowOf(standaloneWin(), noteKey)),
+      () =>
+        `the note chat ${noteKey} is listed: ${JSON.stringify(listedConversationKeys(standaloneWin()))}`,
+    );
+    for (const row of listRows(standalone)) {
+      assert.notEqual(
+        row.getAttribute("draggable"),
+        "true",
+        `note chat row ${row.dataset.conversationKey} is not draggable`,
+      );
+    }
+    assert.isNull(
+      titleOf(standalone)!.getAttribute("draggable"),
+      "the note chat title is not draggable",
+    );
+    const noteRow = rowOf(standalone, noteKey)!;
+    openRowMenu(standalone, noteRow);
+    assert.isFalse(isConvMenuShown(standalone), "a note chat row has no menu");
+    let transfer = startDrag(standalone, noteRow);
+    assert.notInclude(Array.from(transfer.types), TEAR_OFF_MIME);
+    endDrag(standalone, noteRow, transfer, pointOutsideEveryWindow());
+    transfer = startDrag(standalone, titleOf(standalone)!);
+    assert.notInclude(Array.from(transfer.types), TEAR_OFF_MIME);
+    endDrag(
+      standalone,
+      titleOf(standalone)!,
+      transfer,
+      pointOutsideEveryWindow(),
+    );
+    await Zotero.Promise.delay(500);
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0);
+
+    // WebChat.
+    setModelProviderGroups([apiModelGroup(), webChatModelGroup()] as any);
+    const { key } = await setupStandaloneOnA("Torn W14");
+    standalone = standaloneWin()!;
+    assert.equal(rowOf(standalone, key)?.getAttribute("draggable"), "true");
+    const body = bodyOf(standalone)!;
+    const toggle = body.querySelector(
+      "#llm-model-toggle",
+    ) as HTMLButtonElement | null;
+    assert.isOk(toggle, "the standalone window has a model button");
+    if (isModelMenuOpen(body)) toggle!.click();
+    toggle!.click();
+    let webChatOption: HTMLElement | null = null;
+    await until(
+      () => {
+        webChatOption =
+          modelOptions(body).find(
+            (option) => option.dataset.entryId === WEBCHAT_ENTRY,
+          ) || null;
+        return Boolean(webChatOption);
+      },
+      () => "the standalone window offers the WebChat model",
+    );
+    webChatOption!.click();
+    await until(
+      () => rootOf(standaloneWin())?.dataset.webchatMode === "true",
+      () => "the standalone window enters WebChat",
+      15_000,
+    );
+    await until(
+      () =>
+        !listRows(standaloneWin()).some(
+          (row) => row.getAttribute("draggable") === "true",
+        ) && titleOf(standaloneWin()!)?.getAttribute("draggable") === null,
+      () =>
+        `no row or title is draggable in WebChat: ${JSON.stringify(
+          listRows(standaloneWin()).map((row) => ({
+            key: row.dataset.conversationKey || "",
+            draggable: row.getAttribute("draggable"),
+          })),
+        )}`,
+    );
+    standalone = standaloneWin()!;
+    for (const row of listRows(standalone)) {
+      openRowMenu(standalone, row);
+      assert.isFalse(
+        isConvMenuShown(standalone),
+        "a WebChat row has no Open in New Window item",
+      );
+    }
+    transfer = startDrag(standalone, titleOf(standalone)!);
+    assert.notInclude(Array.from(transfer.types), TEAR_OFF_MIME);
+    endDrag(
+      standalone,
+      titleOf(standalone)!,
+      transfer,
+      pointOutsideEveryWindow(),
+    );
+    await Zotero.Promise.delay(500);
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0);
   });
 });

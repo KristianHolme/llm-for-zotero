@@ -71,6 +71,13 @@ import {
   registerTornChatWindow,
   type TornChatIdentity,
 } from "./tornChatWindows";
+import {
+  TEAR_OFF_MIME,
+  classifyTearOffDragEnd,
+  decodeTornChatIdentity,
+  encodeTornChatIdentity,
+  type ScreenRect,
+} from "./tearOffDrag";
 import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
@@ -114,6 +121,7 @@ import {
   loadedConversationKeys,
   subscribeRequestActivity,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
 } from "./state";
 import { loadAllConversationHistory } from "./historyLoader";
 import {
@@ -300,6 +308,100 @@ function buildTornWindowFeatures(placement?: {
   return features.join(",");
 }
 
+function isFiniteRect(rect: ScreenRect): boolean {
+  return (
+    Number.isFinite(rect.left) &&
+    Number.isFinite(rect.top) &&
+    Number.isFinite(rect.width) &&
+    Number.isFinite(rect.height) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+/**
+ * The screen rectangles of every open, not minimized Zotero or plugin
+ * window. A window or API that cannot be read is left out.
+ */
+function readAppWindowRects(): ScreenRect[] {
+  const rects: ScreenRect[] = [];
+  try {
+    const enumerator = (globalThis as any).Services?.wm?.getEnumerator?.(null);
+    while (enumerator?.hasMoreElements?.()) {
+      try {
+        const win = enumerator.getNext() as any;
+        if (!win || win.closed) continue;
+        const minimized = Number(win.STATE_MINIMIZED ?? 2);
+        if (Number(win.windowState) === minimized) continue;
+        const rect = {
+          left: Number(win.screenX),
+          top: Number(win.screenY),
+          width: Number(win.outerWidth),
+          height: Number(win.outerHeight),
+        };
+        if (isFiniteRect(rect)) rects.push(rect);
+      } catch {
+        // A window that cannot be read does not block the drop.
+      }
+    }
+  } catch {
+    // No window list: treat the drop as outside every window.
+  }
+  return rects;
+}
+
+/**
+ * The available area of the screen at (x, y); the source window's screen
+ * when the screen manager is missing or fails.
+ */
+function readDropScreen(x: number, y: number, sourceWin: Window): ScreenRect {
+  try {
+    const screen = (globalThis as any).Services?.screenManager?.screenForRect?.(
+      x,
+      y,
+      1,
+      1,
+    );
+    if (screen) {
+      const left = { value: 0 };
+      const top = { value: 0 };
+      const width = { value: 0 };
+      const height = { value: 0 };
+      screen.GetAvailRectDisplayPix(left, top, width, height);
+      const rect = {
+        left: Number(left.value),
+        top: Number(top.value),
+        width: Number(width.value),
+        height: Number(height.value),
+      };
+      if (isFiniteRect(rect)) return rect;
+    }
+  } catch {
+    // Fall back to the source window's screen.
+  }
+  try {
+    const screen = sourceWin.screen as Screen & {
+      availLeft?: number;
+      availTop?: number;
+    };
+    const rect = {
+      left: Number(screen.availLeft || 0),
+      top: Number(screen.availTop || 0),
+      width: Number(screen.availWidth),
+      height: Number(screen.availHeight),
+    };
+    if (isFiniteRect(rect)) return rect;
+  } catch {
+    // Use the window's own size below.
+  }
+  return {
+    left: 0,
+    top: 0,
+    width: TORN_WINDOW_WIDTH_PX,
+    height: TORN_WINDOW_HEIGHT_PX,
+  };
+}
+
 // A chat window remembers its library chat in its own selection slot only
 // (the standalone window's, or a torn-off window's). The sidebar panels keep
 // theirs, and the persisted pointers stay the sidebar's (see
@@ -436,6 +538,8 @@ type SidebarConv = {
   providerSessionId?: string;
   scopedConversationKey?: string;
   mode?: "open" | "paper";
+  /** A WebChat session row (hidden from history; never torn off). */
+  webchatSession?: boolean;
 };
 
 type StandaloneCreateConversationOptions = {
@@ -1445,7 +1549,31 @@ function openChatWindowInstance(
 
       skillCtxMenu.append(skillCtxShowInFs, skillCtxRestore, skillCtxDelete);
 
-      root.append(lowerArea, exportPopup, skillOverlay, skillCtxMenu);
+      // Chat row context menu (right-click), styled like the skills menu.
+      const convCtxMenu = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+      convCtxMenu.className =
+        "llm-standalone-skill-ctx-menu llm-standalone-conv-ctx-menu";
+      convCtxMenu.setAttribute("role", "menu");
+      convCtxMenu.style.display = "none";
+
+      const convCtxOpenInWindow = doc.createElementNS(
+        HTML_NS,
+        "button",
+      ) as HTMLButtonElement;
+      convCtxOpenInWindow.className = "llm-standalone-skill-ctx-item";
+      convCtxOpenInWindow.type = "button";
+      convCtxOpenInWindow.setAttribute("role", "menuitem");
+      convCtxOpenInWindow.dataset.action = "open-in-new-window";
+      convCtxOpenInWindow.textContent = t("Open in New Window");
+      convCtxMenu.append(convCtxOpenInWindow);
+
+      root.append(
+        lowerArea,
+        exportPopup,
+        skillOverlay,
+        skillCtxMenu,
+        convCtxMenu,
+      );
       cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
         newWin,
         contentArea,
@@ -1569,6 +1697,237 @@ function openChatWindowInstance(
           : getCurrentLibraryScopeID();
       };
 
+      // -----------------------------------------------------------------------
+      // Tear-off: drag a chat row (or the chat title) out of every window, or
+      // pick "Open in New Window" on a row, to open the chat in a torn-off
+      // window. Never for WebChat (its mode, rows and session chats) or for
+      // note chats.
+      // -----------------------------------------------------------------------
+      const tearOffIdentityFor = (candidate: {
+        system: ConversationSystem;
+        conversationKey: number;
+        kind: "paper" | "global";
+        libraryID: number;
+        paperItemID?: number;
+      }): TornChatIdentity | null => {
+        if (cancelled || newWin.closed || isInWebChatMode) return null;
+        // A note session lists and shows the note's own chats.
+        if (resolveActiveNoteSession(activeItem)) return null;
+        const key = Math.floor(Number(candidate.conversationKey || 0));
+        if (!Number.isFinite(key) || key <= 0) return null;
+        if (
+          webChatSessionConversationKeys.has(key) ||
+          webChatIsolatedConversationKeys.has(key)
+        ) {
+          return null;
+        }
+        if (!isConversationKeyForKind(candidate.system, candidate.kind, key)) {
+          return null;
+        }
+        const libraryID = Math.floor(Number(candidate.libraryID || 0));
+        if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
+        if (candidate.kind === "global") {
+          return {
+            system: candidate.system,
+            conversationKey: key,
+            kind: "global",
+            libraryID,
+          };
+        }
+        const paperItemID = Math.floor(Number(candidate.paperItemID || 0));
+        if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
+        const paper = Zotero.Items.get(paperItemID) as Zotero.Item | false;
+        if (!paper || (paper as any).deleted || (paper as any).isNote?.()) {
+          return null;
+        }
+        return {
+          system: candidate.system,
+          conversationKey: key,
+          kind: "paper",
+          libraryID,
+          paperItemID,
+        };
+      };
+
+      const tearOffIdentityForEntry = (
+        conv: SidebarConv,
+      ): TornChatIdentity | null => {
+        if (conv.webchatSession === true) return null;
+        const listedKind =
+          conv.kind ||
+          (conv.mode === "open"
+            ? "global"
+            : conv.mode === "paper"
+              ? "paper"
+              : null);
+        const kind: "paper" | "global" =
+          listedKind || (standaloneMode === "open" ? "global" : "paper");
+        return tearOffIdentityFor({
+          system: conv.conversationSystem || currentConversationSystem,
+          conversationKey: conv.conversationKey,
+          kind,
+          libraryID: Number(conv.libraryID || 0) || getCurrentLibraryScopeID(),
+          paperItemID:
+            kind === "paper"
+              ? Number(conv.paperItemID || 0) ||
+                Number(currentBasePaperItem?.id || 0)
+              : undefined,
+        });
+      };
+
+      // The chat on screen, while a paper or library chat is mounted.
+      const tearOffIdentityForTitle = (): TornChatIdentity | null => {
+        if (standaloneMode === "paper") {
+          if (!currentBasePaperItem) return null;
+          return tearOffIdentityFor({
+            system: currentConversationSystem,
+            conversationKey: activeConversationKey,
+            kind: "paper",
+            libraryID: getLibraryIDForPaperItem(currentBasePaperItem),
+            paperItemID: Number(currentBasePaperItem.id || 0),
+          });
+        }
+        return tearOffIdentityFor({
+          system: currentConversationSystem,
+          conversationKey: activeConversationKey,
+          kind: "global",
+          libraryID: getCurrentLibraryScopeID(),
+        });
+      };
+
+      /**
+       * A finished tear-off drag: opens the torn-off window where the drag
+       * ended, unless it was cancelled, a target took it, or it ended over a
+       * Zotero or plugin window.
+       */
+      const finishTearOffDrag = (
+        event: DragEvent,
+        identity: TornChatIdentity,
+      ): Window | null => {
+        const transfer = event.dataTransfer;
+        let userCancelled = false;
+        try {
+          userCancelled = Boolean((transfer as any)?.mozUserCancelled);
+        } catch {
+          userCancelled = false;
+        }
+        const screenX = Number(event.screenX);
+        const screenY = Number(event.screenY);
+        const decision = classifyTearOffDragEnd({
+          dropEffect: String(transfer?.dropEffect || "none"),
+          userCancelled,
+          screenX,
+          screenY,
+          appWindowRects: readAppWindowRects(),
+          dropScreen: readDropScreen(screenX, screenY, newWin),
+          windowSize: {
+            width: TORN_WINDOW_WIDTH_PX,
+            height: TORN_WINDOW_HEIGHT_PX,
+          },
+        });
+        if (decision.kind !== "open") return null;
+        return openTornChatWindow(identity, {
+          screenX: decision.screenX,
+          screenY: decision.screenY,
+        });
+      };
+
+      // Makes `source` a tear-off drag source for the chat `getIdentity`
+      // names at the moment the drag starts.
+      const installTearOffDragSource = (
+        source: HTMLElement,
+        getIdentity: () => TornChatIdentity | null,
+      ) => {
+        let draggedIdentity: TornChatIdentity | null = null;
+        source.addEventListener("dragstart", (event: DragEvent) => {
+          draggedIdentity = null;
+          const identity = getIdentity();
+          const transfer = event.dataTransfer;
+          if (!identity || !transfer) {
+            event.preventDefault();
+            return;
+          }
+          // Only the plugin's own type: no text or URL a desktop or another
+          // app could turn into a file.
+          transfer.clearData();
+          transfer.setData(TEAR_OFF_MIME, encodeTornChatIdentity(identity));
+          transfer.effectAllowed = "move";
+          draggedIdentity = identity;
+        });
+        source.addEventListener("dragend", (event: DragEvent) => {
+          const started = draggedIdentity;
+          draggedIdentity = null;
+          if (!started) return;
+          let carried: TornChatIdentity | null = null;
+          try {
+            carried = decodeTornChatIdentity(
+              event.dataTransfer?.getData(TEAR_OFF_MIME) || "",
+            );
+          } catch {
+            carried = null;
+          }
+          // The chat must still be one that may be torn off.
+          if (!getIdentity()) return;
+          finishTearOffDrag(event, carried || started);
+        });
+      };
+
+      const syncTitleTearOff = () => {
+        if (tearOffIdentityForTitle()) {
+          contentTitleText.setAttribute("draggable", "true");
+        } else {
+          contentTitleText.removeAttribute("draggable");
+        }
+      };
+      installTearOffDragSource(contentTitleText, tearOffIdentityForTitle);
+
+      let convCtxEntry: SidebarConv | null = null;
+      const hideConvCtxMenu = () => {
+        convCtxMenu.style.display = "none";
+        convCtxEntry = null;
+      };
+      sidebarList.addEventListener("contextmenu", (e: Event) => {
+        const row = (e.target as Element | null)?.closest?.(
+          ".llm-standalone-conv-item",
+        ) as HTMLElement | null;
+        if (!row || !sidebarList.contains(row)) return;
+        hideConvCtxMenu();
+        const entry = standaloneSidebarEntriesByKey.get(
+          Number(row.dataset.conversationKey || 0),
+        );
+        if (!entry || !tearOffIdentityForEntry(entry)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const me = e as MouseEvent;
+        convCtxEntry = entry;
+        convCtxMenu.style.display = "flex";
+        const menuW = convCtxMenu.offsetWidth || 160;
+        const menuH = convCtxMenu.offsetHeight || 40;
+        let x = me.clientX + 4;
+        let y = me.clientY + 4;
+        if (x + menuW > (doc.documentElement?.clientWidth ?? 9999))
+          x = me.clientX - menuW;
+        if (y + menuH > (doc.documentElement?.clientHeight ?? 9999))
+          y = me.clientY - menuH;
+        convCtxMenu.style.left = `${Math.max(0, x)}px`;
+        convCtxMenu.style.top = `${Math.max(0, y)}px`;
+      });
+      convCtxOpenInWindow.addEventListener("click", () => {
+        const entry = convCtxEntry;
+        hideConvCtxMenu();
+        const identity = entry ? tearOffIdentityForEntry(entry) : null;
+        if (identity) openTornChatWindow(identity);
+      });
+      doc.addEventListener("mousedown", (e: Event) => {
+        if (convCtxMenu.style.display === "none") return;
+        if (!convCtxMenu.contains(e.target as Node)) hideConvCtxMenu();
+      });
+      doc.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Escape" && convCtxMenu.style.display !== "none") {
+          hideConvCtxMenu();
+        }
+      });
+
       const ensureConversationCatalogEntry = async (params: {
         conversationKey?: number;
         libraryID: number;
@@ -1623,6 +1982,7 @@ function openChatWindowInstance(
         scopedConversationKey: entry.scopedConversationKey,
         conversationSystem: entry.system,
         mode: entry.kind === "paper" ? "paper" : "open",
+        ...(entry.webchatSession === true ? { webchatSession: true } : {}),
       });
 
       // -----------------------------------------------------------------------
@@ -1916,6 +2276,7 @@ function openChatWindowInstance(
           contentTitleText.textContent = "Library chat";
         }
         if (unlinkedIcon) unlinkedIcon.hidden = standaloneMode !== "paper";
+        syncTitleTearOff();
         syncPinButton();
       };
 
@@ -2755,6 +3116,12 @@ function openChatWindowInstance(
             }
             btn.append(renameBtn, deleteBtn);
             btn.title = conv.title || t("Untitled chat");
+            if (tearOffIdentityForEntry(conv)) {
+              btn.setAttribute("draggable", "true");
+              installTearOffDragSource(btn, () =>
+                tearOffIdentityForEntry(conv),
+              );
+            }
             sectionRowsBox.appendChild(btn);
           }
         }

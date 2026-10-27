@@ -17922,6 +17922,13 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   -moz-window-dragging: no-drag;
 }
 
+/* The chat title and chat rows tear a chat off into its own window when
+ * dragged; macOS must never take them as a window-move region. */
+:root[customtitlebar] .llm-standalone-content-title-text[draggable="true"],
+:root[customtitlebar] .llm-standalone-conv-item[draggable="true"] {
+  -moz-window-dragging: no-drag;
+}
+
 /* The side panel's bar drags the window like the tab row beside it, the
  * gaps around the tabs included; the tabs, its buttons and the toggle stay
  * clickable. */
