@@ -4651,6 +4651,29 @@
   cursor: text;
 }
 
+/* Marks a torn-off window that does not follow the PDF reader (lucide
+   "unlink"); drawn as a mask so it takes the muted text color. */
+.llm-standalone-unlinked-icon {
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  margin-right: -6px;
+  color: var(--fill-secondary);
+  background-color: currentColor;
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71'/><path d='m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71'/><line x1='8' x2='8' y1='2' y2='5'/><line x1='2' x2='5' y1='8' y2='8'/><line x1='16' x2='16' y1='19' y2='22'/><line x1='19' x2='22' y1='16' y2='16'/></svg>");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71'/><path d='m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71'/><line x1='8' x2='8' y1='2' y2='5'/><line x1='2' x2='5' y1='8' y2='8'/><line x1='16' x2='16' y1='19' y2='22'/><line x1='19' x2='22' y1='16' y2='16'/></svg>");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-standalone-unlinked-icon[hidden] {
+  display: none;
+}
+
 .llm-standalone-content-title-actions {
   display: inline-flex;
   align-items: center;

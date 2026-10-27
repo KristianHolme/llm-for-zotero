@@ -1286,6 +1286,19 @@ function openChatWindowInstance(
       ) as HTMLSpanElement;
       contentTitleText.className = "llm-standalone-content-title-text";
 
+      // A torn-off window does not follow the PDF reader; in Paper chat a
+      // small unlinked icon says so.
+      let unlinkedIcon: HTMLSpanElement | null = null;
+      if (!linkedToReader) {
+        unlinkedIcon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+        unlinkedIcon.className = "llm-standalone-unlinked-icon";
+        unlinkedIcon.title = t(
+          "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+        );
+        unlinkedIcon.hidden = standaloneMode !== "paper";
+        root.dataset.readerLink = "unlinked";
+      }
+
       const contentTitleBarSpacer = doc.createElementNS(
         HTML_NS,
         "div",
@@ -1331,6 +1344,7 @@ function openChatWindowInstance(
         iconExport,
         iconClear,
       );
+      if (unlinkedIcon) contentTitleBar.append(unlinkedIcon);
       contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1901,6 +1915,7 @@ function openChatWindowInstance(
         } else {
           contentTitleText.textContent = "Library chat";
         }
+        if (unlinkedIcon) unlinkedIcon.hidden = standaloneMode !== "paper";
         syncPinButton();
       };
 

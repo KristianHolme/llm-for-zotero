@@ -1732,6 +1732,8 @@ const zhCN: Record<string, string> = {
   "Close HTML preview viewer": "关闭 HTML 预览查看器",
   "Preview stopped: the page tried to leave.":
     "预览已停止：该页面试图跳转离开。",
+  "Not linked to the PDF reader. Switching PDF tabs does not change this chat.":
+    "未与 PDF 阅读器关联。切换 PDF 标签页不会改变此对话。",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────

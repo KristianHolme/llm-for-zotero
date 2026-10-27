@@ -891,4 +891,51 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     const again = await api.startNewStandaloneConversation();
     assert.isAbove(toKey(again.conversationKey), 0, JSON.stringify(again));
   });
+
+  // ── W10 ──────────────────────────────────────────────────────────────────
+
+  it("W10: the unlinked icon shows in Paper chat only, and never in the standalone window", async function () {
+    const { standalone } = await setupTornOnA("Torn W10");
+    const torn = tornWin()!;
+    const iconOf = (win: Window) =>
+      win.document.querySelector(
+        ".llm-standalone-content-title .llm-standalone-unlinked-icon",
+      ) as HTMLElement | null;
+    const shown = (win: Window) => {
+      const icon = iconOf(win);
+      if (!icon) return false;
+      return win.getComputedStyle(icon)?.display !== "none" && !icon.hidden;
+    };
+
+    const windowRoot = (win: Window) =>
+      win.document.getElementById("llmforzotero-standalone-chat-root");
+    assert.equal(
+      windowRoot(torn)?.getAttribute("data-reader-link"),
+      "unlinked",
+    );
+    assert.isNull(windowRoot(standalone)?.getAttribute("data-reader-link"));
+    const icon = iconOf(torn);
+    assert.isOk(icon, "the torn-off window has an unlinked icon");
+    assert.isTrue(shown(torn), "the icon shows in Paper chat");
+    assert.equal(
+      icon!.title,
+      "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+    );
+
+    await clickWindowTab(torn, "open");
+    await until(
+      () => stateOf(tornWin()).conversationKind === "global",
+      () => `Library chat: ${JSON.stringify(stateOf(tornWin()))}`,
+    );
+    assert.isFalse(shown(torn), "the icon is hidden in Library chat");
+
+    await clickWindowTab(torn, "paper");
+    await until(
+      () => stateOf(tornWin()).conversationKind === "paper",
+      () => `Paper chat: ${JSON.stringify(stateOf(tornWin()))}`,
+    );
+    assert.isTrue(shown(torn), "the icon shows again in Paper chat");
+
+    assert.isNull(iconOf(standalone), "the standalone window has no icon");
+  });
 });
