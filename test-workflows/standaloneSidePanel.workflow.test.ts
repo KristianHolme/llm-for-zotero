@@ -1276,7 +1276,7 @@ describe("workflow: standalone side panel", function () {
     // page needs an empty one.
     await api.startNewStandaloneConversation();
     await api.clickStandaloneSidePanelControl("toggle");
-    const aligned =(state: WorkflowTestStandaloneSidePanelDiagnostics) => {
+    const aligned = (state: WorkflowTestStandaloneSidePanelDiagnostics) => {
       const page = state.design.newTabPage;
       return Boolean(
         page &&

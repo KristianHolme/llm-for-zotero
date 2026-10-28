@@ -29,7 +29,6 @@ Documentation:
 
 <img width="1863" height="1332" alt="Screenshot 2026-10-26 at 17 39 20" src="https://github.com/user-attachments/assets/8886ba6c-37a4-4da7-be1e-571d3760cf11" />
 
-
 ## Demo Video
 
 How to do a library chat literature review with llm-for-zotero agent
@@ -441,6 +440,7 @@ Built-in skills:
 | `compare-papers`         | Compare multiple papers using batched reads and focused retrieval |
 | `library-analysis`       | Summarize or analyze your entire library without context overflow |
 | `literature-review`      | Conduct a structured literature review                            |
+| `reorganize-library`     | Sort papers into folders or tags after you review the grouping    |
 | `write-note`             | Write Zotero notes or Markdown notes in configured local folders  |
 | `import-cited-reference` | Import papers cited in the current PDF into Zotero                |
 

@@ -191,7 +191,8 @@ describe("task progress: sources from outside the library", function () {
         content: {
           results: [
             page(3, {
-              title: "A BCI study - PubMed - doi: 10.1016/j.sample.2025.02.001.",
+              title:
+                "A BCI study - PubMed - doi: 10.1016/j.sample.2025.02.001.",
             }),
           ],
         },

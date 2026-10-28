@@ -235,7 +235,7 @@ export function findQuoteAroundGaps(
   const cut = /…$/.test(trimmed);
   let clean = trimmed.replace(/…$/, "").trim();
   // A long quote cut inside its last citation: that part is drawn whole.
-  if (cut) clean = clean.replace(/\s*[(\[][^)\]]*$/, "").trim();
+  if (cut) clean = clean.replace(/\s*[([][^)\]]*$/, "").trim();
   const gapsAt: Array<{ start: number; end: number }> = [];
   for (const match of clean.matchAll(MATH))
     gapsAt.push({ start: match.index!, end: match.index! + match[0].length });
@@ -519,7 +519,7 @@ function findQuoteCard(
   let clean = quote.replace(/^[\s"“”'‘’]+|[\s"“”'‘’]+$/g, "");
   const cut = /…$/.test(clean);
   clean = clean.replace(/…$/, "");
-  if (cut) clean = clean.replace(/\s*[(\[][^)\]]*$/, "");
+  if (cut) clean = clean.replace(/\s*[([][^)\]]*$/, "");
   // Its citations and maths are gaps: the card draws them otherwise, or not.
   const mentions = extractInlineCitationMentions(clean);
   const named = mentions.map((mention) => bareWords(mention.rawText));
