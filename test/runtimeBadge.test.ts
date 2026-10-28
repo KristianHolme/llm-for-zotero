@@ -113,6 +113,21 @@ describe("runtime badge state", function () {
     assert.isFalse(state.clickable);
   });
 
+  it("names the held chat's runtime in a torn-off window and switches nothing", function () {
+    const state = resolveRuntimeBadgeState({
+      ...base,
+      system: "codex",
+      isTornWindow: true,
+    });
+    assert.isTrue(state.visible);
+    assert.isFalse(state.clickable);
+    assert.equal(state.label, "Codex");
+    assert.deepEqual(
+      state.items.map((item) => item.system),
+      ["codex"],
+    );
+  });
+
   it("is not clickable in a side chat and offers no Codex or Claude", function () {
     const state = resolveRuntimeBadgeState({ ...base, isSideChat: true });
     assert.isTrue(state.visible);

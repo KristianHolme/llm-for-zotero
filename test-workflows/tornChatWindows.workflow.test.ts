@@ -10,6 +10,7 @@ import {
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
+  WorkflowTestSeededHistoryConversation,
 } from "../src/modules/contextPanel/workflowTestTypes";
 import {
   installHeldChatProvider,
@@ -21,10 +22,12 @@ import {
 } from "./helpers/sharedConversationStream";
 
 /**
- * A torn-off chat window is a second instance of the standalone window
- * document that keeps its own paper: it does not follow the PDF reader, and
- * it keeps its own selection and model choices apart from the standalone
- * window. The standalone window keeps its singleton behavior.
+ * A torn-off chat window (a "follower") is a compact second instance of the
+ * standalone window document that holds one chat: it shows no chat list, no
+ * Paper chat | Library chat toggle and no New chat, it does not follow the
+ * PDF reader, and it keeps its own selection and model choices apart from
+ * the standalone window (the "leader"). The leader keeps its singleton
+ * behavior.
  *
  * Everything runs in the real Zotero host against real reader tabs and real
  * chat windows. Most cases send nothing and exercise only the menus and
@@ -132,6 +135,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   let provider: HeldChatProvider;
   const previousPrefs = new Map<string, unknown>();
   const fixtures: WorkflowTestFixture[] = [];
+  const seededChats: WorkflowTestSeededHistoryConversation[] = [];
   const readers: any[] = [];
 
   const mainWin = () => Zotero.getMainWindow();
@@ -201,12 +205,65 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.fail(describe());
   }
 
-  async function clickWindowTab(win: Window, tab: "paper" | "open") {
-    const button = win.document.querySelector(
-      `.llm-standalone-tab-row .llm-standalone-tab[data-tab='${tab}']`,
+  /** Rendered, with a box: not detached, hidden or display:none. */
+  function isShown(node: Element | null | undefined): boolean {
+    if (!node || !node.isConnected) return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  const shownIn = (win: Window, selector: string): HTMLElement[] =>
+    (
+      Array.from(win.document.querySelectorAll(selector)) as HTMLElement[]
+    ).filter(isShown);
+
+  const windowRoot = (win: Window | null): HTMLElement | null =>
+    (win?.document.getElementById(
+      "llmforzotero-standalone-chat-root",
+    ) as HTMLElement | null) || null;
+
+  const followerTitleOf = (win: Window | null): HTMLElement | null =>
+    (win?.document.querySelector(
+      ".llm-follower-title",
+    ) as HTMLElement | null) || null;
+
+  // The window's own all-chats popup (the chat panel has popups of its own
+  // with the same classes, inside the content area).
+  const WINDOW_SEARCH_OVERLAY =
+    "#llmforzotero-standalone-chat-root > .llm-standalone-search-overlay";
+
+  const searchOverlayOf = (win: Window): HTMLElement | null =>
+    win.document.querySelector(WINDOW_SEARCH_OVERLAY) as HTMLElement | null;
+
+  const searchRowOf = (win: Window, key: number): HTMLElement | null =>
+    win.document.querySelector(
+      `${WINDOW_SEARCH_OVERLAY} .llm-standalone-search-item[data-conversation-key="${key}"]`,
     ) as HTMLElement | null;
-    assert.isOk(button, `the window renders its ${tab} tab`);
-    button!.click();
+
+  /** Opens the follower's History popup and waits for `key`'s row. */
+  async function openFollowerHistory(
+    win: Window,
+    key: number,
+  ): Promise<HTMLElement> {
+    const history = win.document.querySelector(
+      ".llm-follower-history",
+    ) as HTMLElement | null;
+    assert.isOk(history, "the follower has a History button");
+    history!.click();
+    await until(
+      () =>
+        searchOverlayOf(win)?.style.display !== "none" &&
+        Boolean(searchRowOf(win, key)),
+      () =>
+        `the follower's History lists chat ${key}: ${JSON.stringify(
+          Array.from(
+            win.document.querySelectorAll(
+              `${WINDOW_SEARCH_OVERLAY} .llm-standalone-search-item`,
+            ),
+          ).map((row: any) => row.dataset.conversationKey),
+        )}`,
+    );
+    return searchRowOf(win, key)!;
   }
 
   function listedConversationKeys(win: Window | null): number[] {
@@ -251,12 +308,38 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     await mainWin().ZoteroPane.selectItem(itemId);
   }
 
-  async function catalogPaperItemID(conversationKey: number) {
-    const rows = (await Zotero.DB.queryAsync(
-      "SELECT paper_item_id AS paperItemID FROM llm_for_zotero_paper_conversations WHERE conversation_key = ?",
-      [conversationKey],
-    )) as Array<{ paperItemID: number }>;
-    return rows.length ? toKey(rows[0].paperItemID) : 0;
+  /** A stored chat (one turn) written straight into a runtime's store. */
+  async function seedChat(input: {
+    system: "upstream" | "codex" | "claude_code";
+    kind: "global" | "paper";
+    paperItemId?: number;
+    userText: string;
+  }): Promise<WorkflowTestSeededHistoryConversation> {
+    const chat = await api.seedHistoryConversation({
+      ...input,
+      assistantText: `Answer to: ${input.userText}`,
+    });
+    seededChats.push(chat);
+    return chat;
+  }
+
+  /** Opens a follower on a stored chat and waits until it shows it. */
+  async function openFollower(identity: {
+    system: "upstream" | "codex" | "claude_code";
+    conversationKey: number;
+    kind: "global" | "paper";
+    paperItemID?: number;
+  }): Promise<Window> {
+    await api.openTornChatWindowForTest({
+      ...identity,
+      libraryID: Number(Zotero.Libraries.userLibraryID),
+    });
+    await until(
+      () => stateOf(tornWin()).conversationKey === identity.conversationKey,
+      () =>
+        `a follower shows chat ${identity.conversationKey}: ${JSON.stringify(stateOf(tornWin()))}`,
+    );
+    return tornWin()!;
   }
 
   /**
@@ -427,46 +510,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
   }
 
-  // ── Side chats ───────────────────────────────────────────────────────────
-
-  const sideChatBody = (win: Window | null): HTMLElement | null =>
-    (win?.document.querySelector(
-      ".llm-standalone-side-panel-chat:not([hidden]) .llm-standalone-side-body",
-    ) as HTMLElement | null) || null;
-
-  /** Opens the window's side panel and a new side chat in it. */
-  async function openSideChat(win: Window, name: string): Promise<HTMLElement> {
-    const doc = win.document;
-    const launchSelector =
-      ".llm-standalone-side-panel-newtab:not([hidden]) [data-side-launch='sidechat']";
-    const toggle = doc.querySelector(
-      ".llm-standalone-side-panel-toggle",
-    ) as HTMLElement | null;
-    assert.isOk(toggle, `the ${name} has a side panel toggle`);
-    if (toggle!.getAttribute("aria-expanded") !== "true") toggle!.click();
-    await Zotero.Promise.delay(250);
-    if (!doc.querySelector(launchSelector)) {
-      (
-        doc.querySelector(
-          ".llm-standalone-side-panel-bar > .llm-standalone-side-panel-icon-new-tab",
-        ) as HTMLElement | null
-      )?.click();
-      await Zotero.Promise.delay(250);
-    }
-    const launch = doc.querySelector(launchSelector) as HTMLElement | null;
-    assert.isOk(launch, `the ${name}'s side panel offers a side chat`);
-    launch!.click();
-    await until(
-      () =>
-        Boolean(
-          (sideChatBody(win)?.querySelector("#llm-main") as HTMLElement | null)
-            ?.dataset.handlersInitialized,
-        ),
-      () => `the ${name}'s side chat mounts`,
-    );
-    return sideChatBody(win)!;
-  }
-
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   before(async function () {
@@ -512,9 +555,13 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     }
     mainWin().Zotero_Tabs?.select?.("zotero-pane");
     await api.closeStandalone();
+    for (const chat of seededChats.splice(0)) {
+      await api.deleteSeededHistoryConversation(chat);
+    }
     for (const fixture of fixtures.splice(0)) {
       await api.cleanupFixture(fixture);
     }
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", false, true);
     await api.reset();
   });
 
@@ -539,9 +586,9 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
     assert.approximately(
       torn.outerWidth,
-      640,
+      420,
       4,
-      "the torn-off window opens 640 px wide",
+      "the torn-off window opens 420 px wide",
     );
 
     showReader(readerB);
@@ -586,80 +633,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     });
   });
 
-  // ── W3 ───────────────────────────────────────────────────────────────────
-
-  it("W3: Library chat and back returns the torn-off window to its own paper", async function () {
-    const { a, b, key } = await setupTornOnA("Torn W3");
-    const torn = tornWin()!;
-    await clickWindowTab(torn, "open");
-    await until(
-      () => stateOf(tornWin()).conversationKind === "global",
-      () =>
-        `the torn-off window switches to Library chat: ${JSON.stringify(stateOf(tornWin()))}`,
-    );
-    await showInLibrary(b.parentItemId);
-    await until(
-      () => stateOf(standaloneWin()).basePaperItemId === b.parentItemId,
-      () =>
-        `Zotero shows B (the standalone window follows): ${JSON.stringify(stateOf(standaloneWin()))}`,
-    );
-    await clickWindowTab(torn, "paper");
-    await until(
-      () => stateOf(tornWin()).conversationKind === "paper",
-      () =>
-        `the torn-off window returns to Paper chat: ${JSON.stringify(stateOf(tornWin()))}`,
-    );
-    await Zotero.Promise.delay(300);
-    assertTornOnA("after Library chat and back while Zotero shows B", {
-      key,
-      paperId: a.parentItemId,
-    });
-  });
-
-  // ── W4 ───────────────────────────────────────────────────────────────────
-
-  it("W4: a new paper chat in the torn-off window belongs to its own paper", async function () {
-    const { a, b, key } = await setupTornOnA("Torn W4");
-    await showInLibrary(b.parentItemId);
-    await until(
-      () => stateOf(standaloneWin()).basePaperItemId === b.parentItemId,
-      () =>
-        `Zotero shows B (the standalone window follows): ${JSON.stringify(stateOf(standaloneWin()))}`,
-    );
-    const newChat = tornWin()!.document.querySelector(
-      "[data-sidebar-action='new-chat']",
-    ) as HTMLElement | null;
-    assert.isOk(newChat, "the torn-off window has a New chat button");
-    newChat!.click();
-    await until(
-      () =>
-        stateOf(tornWin()).conversationKey > 0 &&
-        stateOf(tornWin()).conversationKey !== key,
-      () =>
-        `the torn-off window starts a new chat: ${JSON.stringify(stateOf(tornWin()))}`,
-    );
-    const fresh = stateOf(tornWin());
-    assert.equal(fresh.conversationKind, "paper", JSON.stringify(fresh));
-    assert.equal(
-      fresh.basePaperItemId,
-      a.parentItemId,
-      `the new chat is A's: ${JSON.stringify(fresh)}`,
-    );
-    let paperItemID = 0;
-    await until(
-      async () => {
-        paperItemID = await catalogPaperItemID(fresh.conversationKey);
-        return paperItemID > 0;
-      },
-      () => `the new chat ${fresh.conversationKey} is stored`,
-    );
-    assert.equal(
-      paperItemID,
-      a.parentItemId,
-      "the stored new chat belongs to A, not to B that Zotero shows",
-    );
-  });
-
   // ── W5 ───────────────────────────────────────────────────────────────────
 
   it("W5: closing a torn-off window leaves the standalone window following PDF tabs", async function () {
@@ -690,26 +663,8 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       key,
       paperId: a.parentItemId,
     });
-    await until(
-      () => listedConversationKeys(tornWin()).includes(key),
-      () =>
-        `the torn-off window's list shows A's chat ${key}: ${JSON.stringify(listedConversationKeys(tornWin()))}`,
-    );
-    const torn = tornWin()!;
-    await clickWindowTab(torn, "open");
-    await until(
-      () => stateOf(tornWin()).conversationKind === "global",
-      () => `Library chat still works: ${JSON.stringify(stateOf(tornWin()))}`,
-    );
-    await clickWindowTab(torn, "paper");
-    await until(
-      () => stateOf(tornWin()).conversationKey === key,
-      () => `Paper chat returns to A: ${JSON.stringify(stateOf(tornWin()))}`,
-    );
-    assertTornOnA("after Library chat and back", {
-      key,
-      paperId: a.parentItemId,
-    });
+    // Its History still lists every chat, its own included.
+    await openFollowerHistory(tornWin()!, key);
   });
 
   // ── W7 ───────────────────────────────────────────────────────────────────
@@ -724,22 +679,13 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       () =>
         `the torn-off window shows Library chat and the no-paper status: ${JSON.stringify(stateOf(tornWin()))}`,
     );
-    const torn = tornWin()!;
-    await clickWindowTab(torn, "paper");
     await Zotero.Promise.delay(400);
-    let state = stateOf(tornWin());
-    assert.equal(
-      state.conversationKind,
-      "global",
-      `Paper chat has no paper to show: ${JSON.stringify(state)}`,
-    );
-    assert.include(state.statusText, NO_PAPER_STATUS, JSON.stringify(state));
+    const state = stateOf(tornWin());
     assert.notEqual(
       state.basePaperItemId,
       a.parentItemId,
       `the trashed paper is not shown: ${JSON.stringify(state)}`,
     );
-    state = stateOf(tornWin());
     assert.isAbove(state.conversationKey, 0, JSON.stringify(state));
     assert.isFalse(
       state.inputDisabled,
@@ -816,64 +762,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
   });
 
-  // ── W9b ──────────────────────────────────────────────────────────────────
-
-  it("W9b: a side chat in a torn-off window keeps its own model choice, and closing one window's side panel leaves the other's choice", async function () {
-    await setupTornOnA("Torn W9b");
-    const torn = tornWin()!;
-
-    const tornSide = await openSideChat(torn, "torn-off window");
-    assert.equal(
-      tornSide.dataset.selectionSurface,
-      `side:${String(bodyOf(torn)?.dataset.selectionSurface || "").replace(
-        /^torn:/u,
-        "",
-      )}`,
-      "the torn-off window's side chat uses its own side surface",
-    );
-    let side = await readModelMenu(tornSide, "torn-off side chat");
-    assert.equal(side.selected, ENTRY_A, JSON.stringify(side));
-    await selectModel(tornSide, ENTRY_B, MODEL_B, "torn-off side chat");
-    const tornMain = await readModelMenu(bodyOf(torn)!, "torn-off window");
-    assert.equal(
-      tornMain.selected,
-      ENTRY_A,
-      `the torn-off window's own chat keeps model A: ${JSON.stringify(tornMain)}`,
-    );
-
-    // The standalone window's first side chat starts from its own window.
-    const standaloneSide = await openSideChat(
-      standaloneWin()!,
-      "standalone window",
-    );
-    assert.equal(standaloneSide.dataset.selectionSurface, "side");
-    const standaloneSideMenu = await readModelMenu(
-      standaloneSide,
-      "standalone side chat",
-    );
-    assert.equal(
-      standaloneSideMenu.selected,
-      ENTRY_A,
-      JSON.stringify(standaloneSideMenu),
-    );
-    side = await readModelMenu(sideChatBody(torn)!, "torn-off side chat");
-    assert.equal(
-      side.selected,
-      ENTRY_B,
-      `the torn-off side chat keeps model B after the standalone side chat started: ${JSON.stringify(side)}`,
-    );
-
-    // Closing the standalone window drops its side panel and side choices.
-    await api.closeStandalone();
-    assert.isNull(standaloneWin());
-    side = await readModelMenu(sideChatBody(torn)!, "torn-off side chat");
-    assert.equal(
-      side.selected,
-      ENTRY_B,
-      `the torn-off side chat keeps model B after the standalone side panel closed: ${JSON.stringify(side)}`,
-    );
-  });
-
   // ── W9c ──────────────────────────────────────────────────────────────────
 
   it("W9c: a new chat started in the standalone window right after a torn-off window opened is unaffected", async function () {
@@ -941,49 +829,370 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   // ── W10 ──────────────────────────────────────────────────────────────────
 
-  it("W10: the unlinked icon shows in Paper chat only, and never in the standalone window", async function () {
+  it("W10: every follower, paper or library chat, shows the unlinked icon before its title, and the leader never does", async function () {
     const { standalone } = await setupTornOnA("Torn W10");
-    const torn = tornWin()!;
     const iconOf = (win: Window) =>
       win.document.querySelector(
-        ".llm-standalone-content-title .llm-standalone-unlinked-icon",
+        "span.llm-standalone-unlinked-icon",
       ) as HTMLElement | null;
-    const shown = (win: Window) => {
+    const assertIconBeforeTitle = (win: Window, context: string) => {
       const icon = iconOf(win);
-      if (!icon) return false;
-      return win.getComputedStyle(icon)?.display !== "none" && !icon.hidden;
+      const title = followerTitleOf(win);
+      assert.isOk(icon, `${context}: the follower has an unlinked icon`);
+      assert.isTrue(isShown(icon), `${context}: the icon shows`);
+      assert.isOk(title, `${context}: the follower has a title`);
+      assert.isTrue(
+        Boolean(
+          icon!.compareDocumentPosition(title!) &
+          (win as any).Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+        `${context}: the icon comes before the title`,
+      );
+      assert.equal(
+        icon!.title,
+        "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+      );
+      assert.equal(
+        windowRoot(win)?.getAttribute("data-reader-link"),
+        "unlinked",
+      );
     };
 
-    const windowRoot = (win: Window) =>
-      win.document.getElementById("llmforzotero-standalone-chat-root");
-    assert.equal(
-      windowRoot(torn)?.getAttribute("data-reader-link"),
-      "unlinked",
-    );
+    assertIconBeforeTitle(tornWin()!, "paper chat");
+    assert.isNull(iconOf(standalone), "the leader has no unlinked icon");
     assert.isNull(windowRoot(standalone)?.getAttribute("data-reader-link"));
-    const icon = iconOf(torn);
-    assert.isOk(icon, "the torn-off window has an unlinked icon");
-    assert.isTrue(shown(torn), "the icon shows in Paper chat");
+
+    await api.closeTornChatWindowsForTest();
+    const library = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W10 library question",
+    });
+    const torn = await openFollower({
+      system: "upstream",
+      conversationKey: library.conversationKey,
+      kind: "global",
+    });
+    assert.equal(stateOf(torn).conversationKind, "global");
+    assertIconBeforeTitle(torn, "library chat");
+    assert.isNull(iconOf(standalone), "the leader still has no icon");
+  });
+
+  // ── W24 ──────────────────────────────────────────────────────────────────
+
+  it("W24: a follower shows one chat's controls in two rows and none of the leader's navigation", async function () {
+    // Codex on: the leader then offers runtime controls a follower must not.
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
+    const { key, standalone } = await setupTornOnA("Torn W24");
+    const torn = tornWin()!;
+    const doc = torn.document;
     assert.equal(
-      icon!.title,
-      "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+      windowRoot(torn)?.getAttribute("data-window-role"),
+      "follower",
+    );
+    assert.equal(
+      windowRoot(standalone)?.getAttribute("data-window-role"),
+      "leader",
     );
 
-    await clickWindowTab(torn, "open");
+    // Leader-only navigation is absent.
+    for (const selector of [
+      ".llm-standalone-sidebar",
+      ".llm-standalone-tab-group",
+      ".llm-standalone-tab[data-tab]",
+      "[data-sidebar-action='new-chat']",
+      "[data-sidebar-action='search-history']",
+      ".llm-standalone-conv-group-new",
+      ".llm-standalone-pinned-region",
+      ".llm-standalone-icon-pin",
+      ".llm-standalone-runtime-system-controls",
+    ]) {
+      assert.lengthOf(
+        shownIn(torn, selector),
+        0,
+        `the follower shows no ${selector}`,
+      );
+    }
+    assert.isAbove(
+      shownIn(standalone, ".llm-standalone-runtime-system-controls button")
+        .length,
+      0,
+      "the leader shows its runtime controls",
+    );
+    // The composer's runtime badge names the runtime but switches nothing.
+    const badge = bodyOf(torn)?.querySelector(
+      "#llm-runtime-mode-toggle",
+    ) as HTMLButtonElement | null;
+    assert.isTrue(
+      !isShown(badge) || badge!.disabled,
+      "the follower's runtime badge is not a switch",
+    );
+
+    // Its own controls, each once.
+    const one = (selector: string): HTMLElement => {
+      const shown = shownIn(torn, selector);
+      assert.lengthOf(shown, 1, `the follower shows one ${selector}`);
+      return shown[0];
+    };
+    const title = one(".llm-follower-title");
+    const icon = one(".llm-standalone-unlinked-icon");
+    const sidePanel = one(".llm-standalone-side-panel-toggle");
+    const openMain = one(".llm-follower-open-main");
+    const history = one(".llm-follower-history");
+    const exportButton = one(".llm-standalone-icon-export");
+    const deleteButton = one(".llm-standalone-icon-clear");
+    assert.equal(openMain.title, "Open in main window");
+    assert.lengthOf(
+      torn.document.querySelectorAll(".llm-follower-pin"),
+      0,
+      "the follower has no keep-on-top pin",
+    );
+    assert.equal(history.title, "History");
+
+    // Top row: icon, title, then side panel and Open in main window.
+    const topRow = doc.querySelector(".llm-standalone-tab-row")!;
+    for (const node of [icon, title, sidePanel, openMain]) {
+      assert.isTrue(
+        topRow.contains(node),
+        `${node.className} is in the top row`,
+      );
+    }
+    // The window buttons (macOS draws its traffic lights there) lead the
+    // top row; the sidebar toggle that goes with them in the leader does not.
+    const windowButtons = doc.querySelector(".llm-window-buttons");
+    assert.isTrue(
+      Boolean(windowButtons && topRow.contains(windowButtons)),
+      "the window buttons are in the top row",
+    );
+    assert.lengthOf(shownIn(torn, ".llm-standalone-nav-toggle"), 0);
+    const left = (node: Element) => node.getBoundingClientRect().left;
+    assert.isBelow(left(title), left(sidePanel));
+    assert.isBelow(left(sidePanel), left(openMain));
+    // Second row: History on the left, export and delete on the right.
+    const secondRow = doc.querySelector(".llm-standalone-content-title")!;
+    for (const node of [history, exportButton, deleteButton]) {
+      assert.isTrue(
+        secondRow.contains(node),
+        `${node.className} is in the second row`,
+      );
+    }
+    assert.isBelow(left(history), left(exportButton));
+    assert.isBelow(left(exportButton), left(deleteButton));
+    assert.isBelow(
+      topRow.getBoundingClientRect().top,
+      secondRow.getBoundingClientRect().top,
+      "the top row is above the second row",
+    );
+    assert.isBelow(
+      secondRow.getBoundingClientRect().top,
+      (doc.querySelector("#llm-input") as HTMLElement).getBoundingClientRect()
+        .top,
+      "the composer is below both rows",
+    );
+
+    // History opens the all-chats popup under its button.
+    await openFollowerHistory(torn, key);
+    const popup = searchOverlayOf(torn)!.querySelector(
+      ".llm-standalone-search-popup",
+    ) as HTMLElement;
+    const historyRect = history.getBoundingClientRect();
+    const popupRect = popup.getBoundingClientRect();
+    assert.isAtLeast(
+      popupRect.top,
+      historyRect.bottom - 1,
+      "the popup opens below the History button",
+    );
+    assert.isAtMost(
+      Math.abs(popupRect.left - historyRect.left),
+      16,
+      `the popup lines up with the History button: ${JSON.stringify({
+        popup: popupRect.left,
+        history: historyRect.left,
+      })}`,
+    );
+    const input = searchOverlayOf(torn)!.querySelector(
+      ".llm-standalone-search-input",
+    ) as HTMLElement;
+    input.dispatchEvent(
+      new (torn as any).KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+      }),
+    );
+    assert.equal(searchOverlayOf(torn)?.style.display, "none");
+
+    // The follower keeps a minimum of its own, below the leader's 500 px.
+    torn.resizeTo(370, 500);
     await until(
-      () => stateOf(tornWin()).conversationKind === "global",
-      () => `Library chat: ${JSON.stringify(stateOf(tornWin()))}`,
+      () => Math.abs(torn.outerWidth - 370) <= 4,
+      () => `the follower narrows to 370 px: ${torn.outerWidth}`,
     );
-    assert.isFalse(shown(torn), "the icon is hidden in Library chat");
+    await Zotero.Promise.delay(400);
+    assert.approximately(torn.outerWidth, 370, 4, "it is not grown back");
+    torn.resizeTo(300, 400);
+    await Zotero.Promise.delay(600);
+    assert.isAtLeast(torn.outerWidth, 356, "it stops at 360 px wide");
+    assert.isAtLeast(torn.outerHeight, 476, "it stops at 480 px high");
+  });
 
-    await clickWindowTab(torn, "paper");
+  // ── W24b ─────────────────────────────────────────────────────────────────
+
+  it("W24b: History in a follower opens paper A's Codex chat while Zotero shows paper C, and the next answer uses A", async function () {
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
+    const a = await newPaper("Torn W24b A");
+    const c = await newPaper("Torn W24b C");
+    await openReader(a);
+    const readerC = await openReader(c);
+    const library = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W24b library question",
+    });
+    const codexA = await seedChat({
+      system: "codex",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W24b Codex question",
+    });
+    const agentA = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W24b Agent question",
+    });
+    const torn = await openFollower({
+      system: "upstream",
+      conversationKey: library.conversationKey,
+      kind: "global",
+    });
+    showReader(readerC);
+    await Zotero.Promise.delay(300);
+    const selectedTab = mainWin().Zotero_Tabs.selectedID;
+    assert.equal(selectedTab, readerC.tabID, "Zotero shows C");
+
+    // Every state the follower passes through on the way, sampled.
+    const seenPapers = new Set<number>();
+    const settlesOn = async (key: number, system: string) => {
+      await until(
+        () => {
+          const state = stateOf(tornWin());
+          seenPapers.add(state.basePaperItemId);
+          return (
+            state.conversationKey === key &&
+            rootOf(tornWin())?.dataset.conversationSystem === system &&
+            chipKeys(tornWin()).some((k) => k.startsWith(`${a.parentItemId}:`))
+          );
+        },
+        () =>
+          `the follower shows ${system} chat ${key} on A: ${JSON.stringify({
+            state: stateOf(tornWin()),
+            system: rootOf(tornWin())?.dataset.conversationSystem,
+            chips: chipKeys(tornWin()),
+          })}`,
+        15_000,
+      );
+    };
+
+    (await openFollowerHistory(torn, codexA.conversationKey)).click();
+    await settlesOn(codexA.conversationKey, "codex");
+    let state = stateOf(tornWin());
+    assert.equal(state.conversationKind, "paper", JSON.stringify(state));
+    assert.equal(state.basePaperItemId, a.parentItemId, JSON.stringify(state));
+    for (const chip of chipKeys(tornWin())) {
+      assert.isTrue(
+        chip.startsWith(`${a.parentItemId}:`),
+        `the follower's chips are A's: ${JSON.stringify(chipKeys(tornWin()))}`,
+      );
+    }
+
+    // Back to the Agent runtime on A's own chat, then ask.
+    (await openFollowerHistory(torn, agentA.conversationKey)).click();
+    await settlesOn(agentA.conversationKey, "upstream");
+    state = stateOf(tornWin());
+    assert.equal(state.basePaperItemId, a.parentItemId, JSON.stringify(state));
+    assert.notInclude(
+      Array.from(seenPapers),
+      c.parentItemId,
+      "the follower never showed C, the paper Zotero shows",
+    );
+    assert.equal(
+      mainWin().Zotero_Tabs.selectedID,
+      selectedTab,
+      "Zotero still shows C",
+    );
+
+    api.enableLiveAgentSending();
+    const question = "Torn W24b question about its paper";
+    const body = bodyOf(tornWin())!;
+    const input = body.querySelector("#llm-input") as HTMLTextAreaElement;
+    input.value = question;
+    input.dispatchEvent(new (torn as any).Event("input", { bubbles: true }));
+    (body.querySelector("#llm-send") as HTMLButtonElement).click();
+    const stream = await provider.waitForStream(question);
+    try {
+      assert.include(
+        stream.requestBody,
+        "Torn W24b A: a short page",
+        "the request carries paper A's text",
+      );
+      assert.notInclude(
+        stream.requestBody,
+        "Torn W24b C: a short page",
+        "the request does not carry paper C's text",
+      );
+    } finally {
+      stream.finish();
+    }
+  });
+
+  // ── W25 ──────────────────────────────────────────────────────────────────
+
+  it("W25: a follower's title is the paper's short label for a paper chat and the chat's title for a library chat", async function () {
+    const a = await newPaper("Torn W25 A");
+    const paper = Zotero.Items.get(a.parentItemId);
+    paper.setCreators([
+      { firstName: "Ada", lastName: "Klaus", creatorType: "author" },
+    ]);
+    paper.setField("date", "2017");
+    await paper.saveTx();
+    const paperChat = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W25 paper question",
+    });
+    await openFollower({
+      system: "upstream",
+      conversationKey: paperChat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
     await until(
-      () => stateOf(tornWin()).conversationKind === "paper",
-      () => `Paper chat: ${JSON.stringify(stateOf(tornWin()))}`,
+      () => textOf(followerTitleOf(tornWin())) === "Klaus, 2017",
+      () =>
+        `the paper chat's title is the short label: ${JSON.stringify(textOf(followerTitleOf(tornWin())))}`,
     );
-    assert.isTrue(shown(torn), "the icon shows again in Paper chat");
 
-    assert.isNull(iconOf(standalone), "the standalone window has no icon");
+    await api.closeTornChatWindowsForTest();
+    const library = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W25 library question",
+    });
+    await Zotero.DB.queryAsync(
+      "UPDATE llm_for_zotero_global_conversations SET title = ? WHERE conversation_key = ?",
+      ["Torn W25 library title", library.conversationKey],
+    );
+    await openFollower({
+      system: "upstream",
+      conversationKey: library.conversationKey,
+      kind: "global",
+    });
+    await until(
+      () => textOf(followerTitleOf(tornWin())) === "Torn W25 library title",
+      () =>
+        `the library chat's title is its own: ${JSON.stringify(textOf(followerTitleOf(tornWin())))}`,
+    );
   });
 
   // ── Tear-off gesture and row menu ────────────────────────────────────────
@@ -1171,13 +1380,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       stateOf(standalone).conversationKey,
       key,
       "the standalone window still shows its chat",
-    );
-
-    // The torn-off window's own rows are drag sources too.
-    await until(
-      () => rowOf(tornWin(), key)?.getAttribute("draggable") === "true",
-      () =>
-        `the torn-off window lists a draggable row for chat ${key}: ${JSON.stringify(listedConversationKeys(tornWin()))}`,
     );
   });
 
@@ -1526,69 +1728,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     }
   });
 
-  // ── Two live windows: shared list prefs and one chat in both ─────────────
-
-  const PINNED_PREF = PREF_PREFIX + "standalonePinnedPapers";
-  const COLLAPSED_GROUPS_PREF =
-    PREF_PREFIX + "standaloneSidebarCollapsedGroups";
-
-  const pinnedPref = (): number[] => {
-    try {
-      const parsed = JSON.parse(
-        String(Zotero.Prefs.get(PINNED_PREF, true) || "[]"),
-      );
-      return Array.isArray(parsed) ? parsed.map(toKey).filter(Boolean) : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const pinnedRows = (win: Window | null): number[] =>
-    Array.from(
-      win?.document.querySelectorAll(".llm-standalone-pinned-paper") || [],
-    ).map((row: any) => toKey(row.dataset.paperItemId));
-
-  const pinButtonOf = (win: Window) =>
-    win.document.querySelector(
-      ".llm-standalone-icon-pin",
-    ) as HTMLButtonElement | null;
-
-  const groupHeaderOf = (win: Window | null, key: string) =>
-    (win?.document.querySelector(
-      `.llm-standalone-sidebar-list .llm-standalone-conv-group[data-group-key="${key}"]`,
-    ) as HTMLElement | null) || null;
-
-  function clickPin(win: Window, name: string): void {
-    const button = pinButtonOf(win);
-    assert.isOk(button && !button.hidden, `the ${name} shows its pin button`);
-    button!.click();
-  }
-
-  /** Counts list redraws in both windows while `ms` pass. */
-  async function countListMutations(
-    windows: Window[],
-    ms: number,
-  ): Promise<number> {
-    let count = 0;
-    const observers = windows.map((win) => {
-      const observer = new (win as any).MutationObserver(
-        (records: unknown[]) => {
-          count += records.length;
-        },
-      );
-      for (const selector of [
-        ".llm-standalone-pinned-list",
-        ".llm-standalone-sidebar-list",
-      ]) {
-        const node = win.document.querySelector(selector);
-        if (node) observer.observe(node, { childList: true });
-      }
-      return observer;
-    });
-    await Zotero.Promise.delay(ms);
-    for (const observer of observers) observer.disconnect();
-    return count;
-  }
+  // ── Two live windows: one chat in both ───────────────────────────────────
 
   /** Wait until the conversation's newest answer is final and contains `text`. */
   async function waitForAnswer(key: number, text: string): Promise<void> {
@@ -1615,111 +1755,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   const isStreaming = (win: Window | null) =>
     Boolean(rootOf(win)?.querySelector(".llm-bubble.assistant.streaming"));
-
-  // ── W18 ──────────────────────────────────────────────────────────────────
-
-  it("W18: pinning a paper in one window shows the pin in the other, and a later change in the other keeps it", async function () {
-    Zotero.Prefs.set(PINNED_PREF, "", true);
-    Zotero.Prefs.set(COLLAPSED_GROUPS_PREF, "", true);
-    try {
-      const { a, b, readerB, standalone } = await setupTornOnA("Torn W18");
-      const torn = tornWin()!;
-
-      // Pin A in the torn-off window: the standalone window lists it too.
-      clickPin(torn, "torn-off window");
-      await until(
-        () => pinnedPref().includes(a.parentItemId),
-        () => `the pref holds A's pin: ${JSON.stringify(pinnedPref())}`,
-      );
-      await until(
-        () => pinnedRows(standalone).includes(a.parentItemId),
-        () =>
-          `the standalone window lists A's pin: ${JSON.stringify({
-            standalone: pinnedRows(standalone),
-            torn: pinnedRows(torn),
-            pref: pinnedPref(),
-          })}`,
-      );
-      assert.equal(
-        pinButtonOf(standalone)?.getAttribute("aria-pressed"),
-        "true",
-        "the standalone window, also on A, shows A as pinned",
-      );
-      // A window does not redraw its lists again and again from its own
-      // write, or from the other window's.
-      const redraws = await countListMutations([standalone, torn], 800);
-      assert.equal(redraws, 0, "the lists stay still once the pin shows");
-
-      // Fold the Agent section in the standalone window: the pin stays, and
-      // the torn-off window folds it too.
-      const header = groupHeaderOf(standalone, "upstream");
-      assert.isOk(header, "the standalone window shows the Agent section");
-      header!.click();
-      await until(
-        () =>
-          String(Zotero.Prefs.get(COLLAPSED_GROUPS_PREF, true) || "").includes(
-            "upstream",
-          ),
-        () => "the pref holds the folded Agent section",
-      );
-      assert.deepEqual(
-        pinnedPref(),
-        [a.parentItemId],
-        "folding a section keeps the pin",
-      );
-      await until(
-        () =>
-          groupHeaderOf(tornWin(), "upstream")?.dataset.collapsed === "true",
-        () => "the torn-off window folds the Agent section too",
-      );
-
-      // Pin B in the standalone window: A's pin, made in the other window,
-      // is kept.
-      showReader(readerB);
-      await until(
-        () => stateOf(standalone).basePaperItemId === b.parentItemId,
-        () =>
-          `the standalone window follows the reader to B: ${JSON.stringify(stateOf(standalone))}`,
-      );
-      clickPin(standalone, "standalone window");
-      await until(
-        () => pinnedPref().includes(b.parentItemId),
-        () => `the pref holds B's pin: ${JSON.stringify(pinnedPref())}`,
-      );
-      assert.deepEqual(
-        pinnedPref(),
-        [a.parentItemId, b.parentItemId],
-        "pinning B in the standalone window keeps A's pin",
-      );
-      await until(
-        () =>
-          JSON.stringify(pinnedRows(tornWin())) ===
-          JSON.stringify([a.parentItemId, b.parentItemId]),
-        () =>
-          `the torn-off window lists both pins: ${JSON.stringify(pinnedRows(tornWin()))}`,
-      );
-
-      // Unpin A in the torn-off window: B's pin is kept in both.
-      const unpinA = torn.document.querySelector(
-        `.llm-standalone-pinned-paper[data-paper-item-id="${a.parentItemId}"] [data-action="unpin"]`,
-      ) as HTMLElement | null;
-      assert.isOk(unpinA, "the torn-off window offers Unpin on A");
-      unpinA!.click();
-      await until(
-        () =>
-          JSON.stringify(pinnedPref()) === JSON.stringify([b.parentItemId]) &&
-          JSON.stringify(pinnedRows(standalone)) ===
-            JSON.stringify([b.parentItemId]),
-        () =>
-          `only B stays pinned, in the pref and the standalone window: ${JSON.stringify(
-            { pref: pinnedPref(), standalone: pinnedRows(standalone) },
-          )}`,
-      );
-    } finally {
-      Zotero.Prefs.set(PINNED_PREF, "", true);
-      Zotero.Prefs.set(COLLAPSED_GROUPS_PREF, "", true);
-    }
-  });
 
   // ── W19 ──────────────────────────────────────────────────────────────────
 
@@ -1807,69 +1842,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     }
   });
 
-  // ── W23 ──────────────────────────────────────────────────────────────────
-
-  it("W23: clicking a pinned paper in the torn-off window moves only that window", async function () {
-    Zotero.Prefs.set(PINNED_PREF, "", true);
-    try {
-      const { a, b, readerA, readerB, standalone } =
-        await setupTornOnA("Torn W23");
-      // Pin B from the standalone window while Zotero shows B.
-      showReader(readerB);
-      await until(
-        () => stateOf(standalone).basePaperItemId === b.parentItemId,
-        () => `the standalone window follows to B`,
-      );
-      clickPin(standalone, "standalone window");
-      await until(
-        () => pinnedPref().includes(b.parentItemId),
-        () => `the pref holds B's pin: ${JSON.stringify(pinnedPref())}`,
-      );
-      // Zotero and the standalone window go back to A.
-      showReader(readerA);
-      await until(
-        () => stateOf(standalone).basePaperItemId === a.parentItemId,
-        () => `the standalone window follows back to A`,
-      );
-      await until(
-        () => pinnedRows(tornWin()).includes(b.parentItemId),
-        () => `the torn-off window lists B's pin`,
-      );
-      const selectedTab = mainWin().Zotero_Tabs.selectedID;
-      const selectedItems = mainWin()
-        .ZoteroPane.getSelectedItems(true)
-        .join(",");
-      const row = tornWin()!.document.querySelector(
-        `.llm-standalone-pinned-paper[data-paper-item-id="${b.parentItemId}"]`,
-      ) as HTMLElement | null;
-      assert.isOk(row, "the torn-off window lists B's pinned row");
-      row!.click();
-      await until(
-        () => stateOf(tornWin()).basePaperItemId === b.parentItemId,
-        () =>
-          `the torn-off window moves to B: ${JSON.stringify(stateOf(tornWin()))}`,
-      );
-      await Zotero.Promise.delay(500);
-      assert.equal(
-        mainWin().Zotero_Tabs.selectedID,
-        selectedTab,
-        "Zotero's selected tab is unchanged",
-      );
-      assert.equal(
-        mainWin().ZoteroPane.getSelectedItems(true).join(","),
-        selectedItems,
-        "the library selection is unchanged",
-      );
-      assert.equal(
-        stateOf(standalone).basePaperItemId,
-        a.parentItemId,
-        "the standalone window stays on A",
-      );
-    } finally {
-      Zotero.Prefs.set(PINNED_PREF, "", true);
-    }
-  });
-
   // ── W21 ──────────────────────────────────────────────────────────────────
 
   it("W21: deleting the shown chat from the standalone window moves the torn-off window off it", async function () {
@@ -1932,11 +1904,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         torn.statusText,
         "Cannot delete active conversation",
         JSON.stringify(torn),
-      );
-      assert.notInclude(
-        listedConversationKeys(tornWin()),
-        key,
-        "the torn-off window's list drops the deleted chat",
       );
       assert.deepEqual(logged, [], "no warning or error is logged");
     } finally {

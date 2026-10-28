@@ -1427,6 +1427,7 @@ export function setupHandlers(
       claudeEnabled: isClaudeModeAvailable(),
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
+      isTornWindow: isTornSurface(selectionSurface()),
     });
   };
   const updateRuntimeModeButtonState = () => {

@@ -1735,6 +1735,7 @@ const zhCN: Record<string, string> = {
   "Not linked to the PDF reader. Switching PDF tabs does not change this chat.":
     "未与 PDF 阅读器关联。切换 PDF 标签页不会改变此对话。",
   "Open in New Window": "在新窗口中打开",
+  "Open in main window": "在主窗口中打开",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────

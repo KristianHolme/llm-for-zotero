@@ -227,6 +227,7 @@ import { setStatus } from "./textUtils";
 import { getRegisteredConversationScope } from "../../shared/conversationRegistry";
 import {
   createStandaloneSidebarView,
+  setStandaloneFollowerChromeHost,
   setStandaloneSidebarCollapsedChromeHost,
   setStandaloneSidebarFlyoutOpen,
   setStandaloneSidebarState,
@@ -281,10 +282,13 @@ const STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX =
 const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
 const STANDALONE_WINDOW_FEATURES =
   "chrome,extrachrome,menubar,resizable,scrollbars,status,centerscreen,dialog=no,dependent=no";
-// A torn-off window opens below the History pane's auto-collapse width, so
-// its conversation list starts collapsed.
-const TORN_WINDOW_WIDTH_PX = 640;
+// A torn-off window (a follower) holds one chat and has no conversation
+// list, so it opens narrow, and keeps a minimum of its own below the
+// standalone window's.
+const TORN_WINDOW_WIDTH_PX = 420;
 const TORN_WINDOW_HEIGHT_PX = 760;
+const TORN_WINDOW_MIN_WIDTH_PX = 360;
+const TORN_WINDOW_MIN_HEIGHT_PX = 480;
 
 function buildTornWindowFeatures(placement?: {
   screenX: number;
@@ -404,6 +408,48 @@ function readDropScreen(x: number, y: number, sourceWin: Window): ScreenRect {
   };
 }
 
+/**
+ * The paper's short name: "Creator, Year", as the composer's paper chip
+ * shows it, or its title when it has no creator.
+ */
+function resolvePaperShortLabel(paper: Zotero.Item): string {
+  const ref = resolvePaperContextRefFromItem(paper);
+  const label = ref ? formatPaperCreatorYearLabel(ref) : "";
+  if (label && label !== "Paper") return label;
+  try {
+    return String(paper.getField("title") || "").trim() || t("Paper");
+  } catch {
+    return t("Paper");
+  }
+}
+
+/**
+ * A follower window's title for the chat it holds: the paper's short name
+ * for a paper chat, and the chat's own title for a library chat ("Library
+ * chat" while it has none).
+ */
+export async function getFollowerTitle(
+  identity: TornChatIdentity,
+): Promise<string> {
+  if (identity.kind === "paper") {
+    const paper = Zotero.Items.get(
+      Math.floor(Number(identity.paperItemID || 0)),
+    ) as Zotero.Item | false;
+    return paper ? resolvePaperShortLabel(paper) : t("Paper chat");
+  }
+  try {
+    const entry = await conversationRepository.getCatalogEntry({
+      system: identity.system,
+      conversationKey: identity.conversationKey,
+      kind: "global",
+    });
+    return normalizeHistoryTitle(entry?.title || "") || t("Library chat");
+  } catch (err) {
+    appLogger.warn("LLM: follower title lookup failed", err);
+    return t("Library chat");
+  }
+}
+
 // A chat window remembers its library chat in its own selection slot only
 // (the standalone window's, or a torn-off window's). The sidebar panels keep
 // theirs, and the persisted pointers stay the sidebar's (see
@@ -432,7 +478,11 @@ function rememberStandalonePaperConversation(
   );
 }
 
-function clampStandaloneWindowSize(win: Window): void {
+function clampStandaloneWindowSize(
+  win: Window,
+  minWidth: number,
+  minHeight: number,
+): void {
   try {
     const currentWidth = Math.ceil(
       Number(win.outerWidth || win.innerWidth || 0),
@@ -443,8 +493,8 @@ function clampStandaloneWindowSize(win: Window): void {
     if (!Number.isFinite(currentWidth) || !Number.isFinite(currentHeight)) {
       return;
     }
-    const nextWidth = Math.max(currentWidth, STANDALONE_MIN_WIDTH_PX);
-    const nextHeight = Math.max(currentHeight, STANDALONE_MIN_HEIGHT_PX);
+    const nextWidth = Math.max(currentWidth, minWidth);
+    const nextHeight = Math.max(currentHeight, minHeight);
     if (nextWidth !== currentWidth || nextHeight !== currentHeight) {
       win.resizeTo(nextWidth, nextHeight);
     }
@@ -891,9 +941,16 @@ function openChatWindowInstance(
     libraryID,
   } = params;
   const tornSurface = isTornSurface(windowSurface) ? windowSurface : null;
-  // The standalone window follows the PDF reader; a torn-off window keeps
-  // its own paper and is not the standalone singleton.
+  // The standalone window (the leader) follows the PDF reader; a torn-off
+  // window (a follower) keeps its own chat and is not the standalone
+  // singleton.
   const linkedToReader = tornSurface === null;
+  const minWindowWidth = linkedToReader
+    ? STANDALONE_MIN_WIDTH_PX
+    : TORN_WINDOW_MIN_WIDTH_PX;
+  const minWindowHeight = linkedToReader
+    ? STANDALONE_MIN_HEIGHT_PX
+    : TORN_WINDOW_MIN_HEIGHT_PX;
   // A torn window's side chat: "side:<id>" for its "torn:<id>".
   const sideSurface: SideSurface = tornSurface
     ? `side:${tornSurface.slice("torn:".length)}`
@@ -1007,19 +1064,14 @@ function openChatWindowInstance(
       registerSidePanelItemHost(doc, {
         open: (request) => standaloneSidePanel?.openItem(request),
       });
-      doc.documentElement?.setAttribute(
-        "minwidth",
-        `${STANDALONE_MIN_WIDTH_PX}`,
-      );
-      doc.documentElement?.setAttribute(
-        "minheight",
-        `${STANDALONE_MIN_HEIGHT_PX}`,
-      );
+      doc.documentElement?.setAttribute("minwidth", `${minWindowWidth}`);
+      doc.documentElement?.setAttribute("minheight", `${minWindowHeight}`);
       if (doc.documentElement) {
-        doc.documentElement.style.minWidth = `${STANDALONE_MIN_WIDTH_PX}px`;
-        doc.documentElement.style.minHeight = `${STANDALONE_MIN_HEIGHT_PX}px`;
+        doc.documentElement.style.minWidth = `${minWindowWidth}px`;
+        doc.documentElement.style.minHeight = `${minWindowHeight}px`;
       }
-      enforceStandaloneMinimumSize = () => clampStandaloneWindowSize(newWin);
+      enforceStandaloneMinimumSize = () =>
+        clampStandaloneWindowSize(newWin, minWindowWidth, minWindowHeight);
       newWin.addEventListener("resize", enforceStandaloneMinimumSize);
       newWin.setTimeout(enforceStandaloneMinimumSize, 0);
 
@@ -1200,6 +1252,9 @@ function openChatWindowInstance(
       if (!root) return;
 
       root.dataset.standalone = "true";
+      // The leader has the chat list and follows the PDF reader; a follower
+      // holds one chat in two compact header rows.
+      root.dataset.windowRole = linkedToReader ? "leader" : "follower";
 
       // -----------------------------------------------------------------------
       // Build the shell layout:
@@ -1254,13 +1309,16 @@ function openChatWindowInstance(
 
       // The leading slot is the tab row's single grid cell on the left. It
       // holds the runtime controls; the window buttons and sidebar toggle
-      // join them whenever the sidebar is collapsed.
+      // join them whenever the sidebar is collapsed. A follower's top row
+      // holds its window buttons, unlinked icon and title here instead.
       const tabRowLeading = doc.createElementNS(
         HTML_NS,
         "div",
       ) as HTMLDivElement;
       tabRowLeading.className = "llm-standalone-tab-row-leading";
-      tabRowLeading.append(standaloneRuntimeSystemControls.group);
+      if (linkedToReader) {
+        tabRowLeading.append(standaloneRuntimeSystemControls.group);
+      }
 
       // The trailing slot holds the side panel toggle (right edge).
       const tabRowTrailing = doc.createElementNS(
@@ -1271,7 +1329,11 @@ function openChatWindowInstance(
 
       const tabRow = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       tabRow.className = "llm-standalone-tab-row";
-      tabRow.append(tabRowLeading, tabGroup, tabRowTrailing);
+      if (linkedToReader) {
+        tabRow.append(tabRowLeading, tabGroup, tabRowTrailing);
+      } else {
+        tabRow.append(tabRowLeading, tabRowTrailing);
+      }
 
       // -- Lower area: sidebar + content side by side --
       const lowerArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1331,17 +1393,24 @@ function openChatWindowInstance(
       const sidebarList = sidebarView.list;
       const sidebarResizeHandle = sidebarView.resizeHandle;
 
-      // A collapsed sidebar renders nothing at all, so the window controls and
-      // the collapse toggle move into the tab row for as long as it is hidden,
-      // and hovering the toggle floats the sidebar back over the content.
-      setStandaloneSidebarCollapsedChromeHost(sidebarView, tabRowLeading);
-      cleanupStandaloneSidebarFlyout = installStandaloneSidebarFlyout({
-        win: newWin,
-        toggle: iconSidebarToggle,
-        panel: sidebarPanel,
-        isCollapsed: () => sidebar.dataset.sidebarState === "collapsed",
-        setOpen: (open) => setStandaloneSidebarFlyoutOpen(sidebarView, open),
-      });
+      if (linkedToReader) {
+        // A collapsed sidebar renders nothing at all, so the window controls
+        // and the collapse toggle move into the tab row for as long as it is
+        // hidden, and hovering the toggle floats the sidebar back over the
+        // content.
+        setStandaloneSidebarCollapsedChromeHost(sidebarView, tabRowLeading);
+        cleanupStandaloneSidebarFlyout = installStandaloneSidebarFlyout({
+          win: newWin,
+          toggle: iconSidebarToggle,
+          panel: sidebarPanel,
+          isCollapsed: () => sidebar.dataset.sidebarState === "collapsed",
+          setOpen: (open) => setStandaloneSidebarFlyoutOpen(sidebarView, open),
+        });
+      } else {
+        // A follower has no sidebar: its window controls live in its top
+        // row for good, without the sidebar toggle.
+        setStandaloneFollowerChromeHost(sidebarView, tabRowLeading);
+      }
 
       // Export popup — floating menu from the content-title Export action
       const exportPopup = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1393,8 +1462,8 @@ function openChatWindowInstance(
       ) as HTMLSpanElement;
       contentTitleText.className = "llm-standalone-content-title-text";
 
-      // A torn-off window does not follow the PDF reader; in Paper chat a
-      // small unlinked icon says so.
+      // A follower does not follow the PDF reader; a small unlinked icon
+      // before its title says so, in a paper chat and a library chat alike.
       let unlinkedIcon: HTMLSpanElement | null = null;
       if (!linkedToReader) {
         unlinkedIcon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
@@ -1402,7 +1471,6 @@ function openChatWindowInstance(
         unlinkedIcon.title = t(
           "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
         );
-        unlinkedIcon.hidden = standaloneMode !== "paper";
         root.dataset.readerLink = "unlinked";
       }
 
@@ -1445,14 +1513,49 @@ function openChatWindowInstance(
       iconClear.type = "button";
       iconClear.title = t("Delete conversation");
       iconClear.setAttribute("aria-label", t("Delete conversation"));
-      contentTitleBarSpacer.append(
-        iconPin,
-        iconTaskProgress,
-        iconExport,
-        iconClear,
-      );
-      if (unlinkedIcon) contentTitleBar.append(unlinkedIcon);
-      contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
+      // A follower's own header buttons. Open in main window goes after the
+      // side panel toggle (below, once the side panel exists).
+      let iconFollowerHistory: HTMLButtonElement | null = null;
+      let iconFollowerOpenMain: HTMLButtonElement | null = null;
+      if (linkedToReader) {
+        contentTitleBarSpacer.append(
+          iconPin,
+          iconTaskProgress,
+          iconExport,
+          iconClear,
+        );
+        contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
+      } else {
+        const createFollowerAction = (className: string, label: string) => {
+          const button = doc.createElementNS(
+            HTML_NS,
+            "button",
+          ) as HTMLButtonElement;
+          button.className = `llm-standalone-title-action ${className}`;
+          button.type = "button";
+          button.title = label;
+          button.setAttribute("aria-label", label);
+          return button;
+        };
+        iconFollowerHistory = createFollowerAction(
+          "llm-follower-history",
+          t("History"),
+        );
+        iconFollowerHistory.setAttribute("aria-haspopup", "dialog");
+        // Wired in a later task; shown now so the layout is final.
+        iconFollowerOpenMain = createFollowerAction(
+          "llm-follower-open-main",
+          t("Open in main window"),
+        );
+        iconFollowerOpenMain.disabled = true;
+        // Top row: the unlinked icon and the title; second row: History on
+        // the left, the chat's own actions on the right.
+        contentTitleText.classList.add("llm-follower-title");
+        if (unlinkedIcon) tabRowLeading.append(unlinkedIcon);
+        tabRowLeading.append(contentTitleText);
+        contentTitleBarSpacer.append(iconTaskProgress, iconExport, iconClear);
+        contentTitleBar.append(iconFollowerHistory, contentTitleBarSpacer);
+      }
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       contentArea.className = "llm-standalone-content";
@@ -1466,7 +1569,9 @@ function openChatWindowInstance(
       );
 
       contentWrapper.append(tabRow, contentTitleBar, contentArea);
-      lowerArea.append(sidebar, contentWrapper);
+      // A follower has no chat list: its sidebar is never shown.
+      if (linkedToReader) lowerArea.append(sidebar);
+      lowerArea.append(contentWrapper);
 
       // -- Skills overlay (popup for managing agent skills) --
       const skillOverlay = doc.createElementNS(
@@ -1581,7 +1686,7 @@ function openChatWindowInstance(
         newWin,
         contentArea,
         {
-          minWindowHeight: STANDALONE_MIN_HEIGHT_PX,
+          minWindowHeight,
         },
       );
       // Set once the side panel exists (below); the History pane leaves it
@@ -2266,8 +2371,47 @@ function openChatWindowInstance(
       // -----------------------------------------------------------------------
       // Mount chat UI into contentArea
       // -----------------------------------------------------------------------
-      const updateContentTitle = () => {
+      // A follower's title: the paper's short name for a paper chat, or the
+      // library chat's own title, read from its catalog entry (the newest
+      // read wins). The last title read for each chat shows meanwhile.
+      let followerTitleSeq = 0;
+      const followerLibraryTitles = new Map<number, string>();
+      const syncFollowerTitle = () => {
+        const seq = ++followerTitleSeq;
         if (standaloneMode === "paper" && currentBasePaperItem) {
+          contentTitleText.textContent =
+            resolvePaperShortLabel(currentBasePaperItem);
+          let fullTitle = "";
+          try {
+            fullTitle = String(currentBasePaperItem.getField("title") || "");
+          } catch {
+            fullTitle = "";
+          }
+          contentTitleText.title = fullTitle;
+          return;
+        }
+        const conversationKey = activeConversationKey;
+        const shown =
+          followerLibraryTitles.get(conversationKey) || t("Library chat");
+        contentTitleText.textContent = shown;
+        contentTitleText.title = shown;
+        void getFollowerTitle({
+          system: currentConversationSystem,
+          conversationKey,
+          kind: "global",
+          libraryID: getCurrentLibraryScopeID(),
+        }).then((title) => {
+          if (cancelled || newWin.closed || seq !== followerTitleSeq) return;
+          followerLibraryTitles.set(conversationKey, title);
+          contentTitleText.textContent = title;
+          contentTitleText.title = title;
+        });
+      };
+
+      const updateContentTitle = () => {
+        if (!linkedToReader) {
+          syncFollowerTitle();
+        } else if (standaloneMode === "paper" && currentBasePaperItem) {
           try {
             const title =
               (currentBasePaperItem as any).getField?.("title") || "";
@@ -2278,7 +2422,6 @@ function openChatWindowInstance(
         } else {
           contentTitleText.textContent = "Library chat";
         }
-        if (unlinkedIcon) unlinkedIcon.hidden = standaloneMode !== "paper";
         syncTitleTearOff();
         syncPinButton();
       };
@@ -2346,6 +2489,9 @@ function openChatWindowInstance(
         newWin.setTimeout(() => {
           standaloneSidebarRenderQueued = false;
           void renderSidebar();
+          // A library chat's title can change with its history (its first
+          // question names it).
+          if (!linkedToReader) syncFollowerTitle();
         }, 0);
       };
 
@@ -3712,9 +3858,9 @@ function openChatWindowInstance(
         },
         resolveHistoryEntryPaper: resolveStandaloneHistoryEntryPaper,
         openAsMainChat: selectStandaloneSearchEntry,
-        minWindowWidth: STANDALONE_MIN_WIDTH_PX,
+        minWindowWidth,
         getReservedLeftWidth: () =>
-          sidebar.dataset.sidebarState === "collapsed"
+          !linkedToReader || sidebar.dataset.sidebarState === "collapsed"
             ? 0
             : readPixelStyleVariable("--llm-standalone-sidebar-panel-width") +
               STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
@@ -3738,6 +3884,16 @@ function openChatWindowInstance(
       iconSearch.addEventListener("click", () => {
         searchPopupController.toggle();
       });
+      // A follower's History lists every chat, under its own button; the
+      // side panel toggle comes first in the top row, then Open in main
+      // window.
+      if (iconFollowerHistory) {
+        const historyButton = iconFollowerHistory;
+        historyButton.addEventListener("click", () => {
+          searchPopupController.toggle({ anchor: historyButton });
+        });
+      }
+      if (iconFollowerOpenMain) tabRowTrailing.append(iconFollowerOpenMain);
 
       // ----------------------------------------------------------------
       // Skills popup — open/close/render/interactions
@@ -5708,16 +5864,6 @@ function openChatWindowInstance(
         syncPinButton();
         renderPinnedPapers();
       };
-      const resolvePinnedPaperLabel = (paper: Zotero.Item): string => {
-        const ref = resolvePaperContextRefFromItem(paper);
-        const label = ref ? formatPaperCreatorYearLabel(ref) : "";
-        if (label && label !== "Paper") return label;
-        try {
-          return String(paper.getField("title") || "").trim() || t("Paper");
-        } catch {
-          return t("Paper");
-        }
-      };
       /** The reader tab showing the paper (or one of its files), if open. */
       const findPaperReaderTab = (
         paperID: number,
@@ -5765,23 +5911,6 @@ function openChatWindowInstance(
           togglePin(paperID);
           return;
         }
-        // A torn-off window makes the pinned paper its own and leaves Zotero
-        // (and so the sidebar and the standalone window) where it is.
-        if (!linkedToReader) {
-          const shownHere =
-            standaloneMode === "paper" &&
-            Number(currentBasePaperItem?.id || 0) === paperID;
-          if (shownHere) return;
-          const target = resolvePaperSwitchTarget(paper);
-          if (target.paperItem) {
-            mountRememberedStandalonePaperConversation({
-              paperItem: target.paperItem,
-              panelItem: target.panelItem,
-              rawItem: target.rawItem || target.paperItem,
-            });
-          }
-          return;
-        }
         const readerTab = findPaperReaderTab(paperID);
         pinnedPaperNavigation = { paperID, until: Date.now() + 1500 };
         const shown =
@@ -5825,10 +5954,10 @@ function openChatWindowInstance(
           } catch {
             title = "";
           }
-          row.title = title || resolvePinnedPaperLabel(paper);
+          row.title = title || resolvePaperShortLabel(paper);
           const label = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
           label.className = "llm-standalone-conv-title";
-          label.textContent = resolvePinnedPaperLabel(paper);
+          label.textContent = resolvePaperShortLabel(paper);
           row.append(label);
           const conversationKey = shownPaperConversationKeys.get(paperID) || 0;
           const dot = resolvePinnedPaperDot({

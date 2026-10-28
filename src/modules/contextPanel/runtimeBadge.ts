@@ -14,6 +14,11 @@ export type RuntimeBadgeStateInput = {
   isWebChat: boolean;
   /** The window's temporary side chat: the built-in runtime only. */
   isSideChat: boolean;
+  /**
+   * A torn-off (follower) window: it keeps the runtime of the chat it holds,
+   * so the badge names it and switches nothing.
+   */
+  isTornWindow?: boolean;
 };
 
 export type RuntimeBadgeState = {
@@ -41,13 +46,15 @@ export function resolveRuntimeBadgeState(
   input: RuntimeBadgeStateInput,
 ): RuntimeBadgeState {
   const label = getRuntimeBadgeLabel(input.system, input.agentEnabled);
-  const items: RuntimeBadgeItem[] = [
-    {
-      system: "upstream",
-      label: getRuntimeBadgeLabel("upstream", input.agentEnabled),
-    },
-  ];
-  if (!input.isSideChat) {
+  const items: RuntimeBadgeItem[] = input.isTornWindow
+    ? [{ system: input.system, label }]
+    : [
+        {
+          system: "upstream",
+          label: getRuntimeBadgeLabel("upstream", input.agentEnabled),
+        },
+      ];
+  if (!input.isSideChat && !input.isTornWindow) {
     if (input.codexEnabled) items.push({ system: "codex", label: "Codex" });
     if (input.claudeEnabled) {
       items.push({ system: "claude_code", label: "Claude" });

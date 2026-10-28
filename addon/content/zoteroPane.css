@@ -1872,6 +1872,20 @@
   padding-top: 12vh;
 }
 
+/* Opened from a follower's History button: a dropdown right under the
+ * button (the controller sets the top and left padding), with no dimming. */
+.llm-standalone-search-overlay.llm-standalone-search-overlay-anchored {
+  justify-content: flex-start;
+  padding-right: 8px;
+  padding-bottom: 8px;
+  background: transparent;
+}
+
+.llm-standalone-search-overlay-anchored .llm-standalone-search-popup {
+  width: min(100%, 480px);
+  max-height: min(60vh, 100%);
+}
+
 .llm-standalone-search-overlay.llm-history-search-theme-light,
 .llm-standalone-search-embedded.llm-history-search-theme-light {
   --llm-history-paper-chip-text: #1d4ed8;
@@ -3910,6 +3924,7 @@
 }
 
 .llm-standalone-tab-row .llm-standalone-side-panel-toggle,
+.llm-standalone-tab-row .llm-follower-open-main,
 .llm-standalone-side-panel-bar .llm-standalone-title-action {
   width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
   min-width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
@@ -4674,6 +4689,62 @@
   display: none;
 }
 
+/* --- Follower window: one chat under two compact rows ---------------------
+ * Top row (the tab row): window buttons, unlinked icon and title on the
+ * left; side panel toggle and Open in main window on the right. Second row
+ * (the title row): History on the left; export and delete on the right.
+ */
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row-leading {
+  flex: 1 1 auto;
+  gap: 6px;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row-trailing {
+  flex: 0 0 auto;
+}
+
+/* The title is part of the row that moves the window, so it is not text to
+ * select. */
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-follower-title {
+  font-size: var(--llm-standalone-ui-font-size);
+  line-height: var(--llm-standalone-ui-line-height);
+  font-weight: 500;
+  color: var(--fill-primary);
+  -moz-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-unlinked-icon {
+  margin-right: 0;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-content-title {
+  padding-left: 10px;
+}
+
+.llm-follower-history::before {
+  mask-image: url("icons/action-history-clock.svg");
+  -webkit-mask-image: url("icons/action-history-clock.svg");
+}
+
+/* lucide "square-arrow-down-left": back into the main window. */
+.llm-follower-open-main::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Cpath d='m16 8-8 8M16 16H8V8'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Cpath d='m16 8-8 8M16 16H8V8'/%3E%3C/svg%3E");
+}
+
 .llm-standalone-content-title-actions {
   display: inline-flex;
   align-items: center;
@@ -4693,6 +4764,7 @@
   gap: calc(var(--llm-standalone-chrome-gap) / 2);
 }
 
+.llm-standalone-content-title .llm-follower-history,
 .llm-standalone-content-title-actions .llm-standalone-icon-task-progress,
 .llm-standalone-content-title-actions .llm-standalone-icon-export,
 .llm-standalone-content-title-actions .llm-standalone-icon-clear {
@@ -17938,6 +18010,7 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
 }
 
 :root[customtitlebar] .llm-standalone-side-panel-toggle,
+:root[customtitlebar] .llm-follower-open-main,
 :root[customtitlebar] .llm-standalone-side-panel-tab,
 :root[customtitlebar] .llm-standalone-side-panel-bar button {
   -moz-window-dragging: no-drag;
