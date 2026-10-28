@@ -80,12 +80,7 @@ export const selectedReasoningProviderCache = new Map<
 
 // The same values as conversationSelection's SelectionSurface, spelled out
 // here because that module imports this one.
-type ReasoningSurface =
-  | "embedded"
-  | "standalone"
-  | "side"
-  | `side:${string}`
-  | `torn:${string}`;
+type ReasoningSurface = "embedded" | "standalone" | "side" | `torn:${string}`;
 
 export function reasoningCacheKey(
   surface: ReasoningSurface | undefined,
@@ -98,14 +93,13 @@ export function reasoningCacheKey(
 export function clearSelectedReasoningForSurface(
   surface: ReasoningSurface | undefined,
 ): void {
-  // Match the whole surface name: "side" must not match "side:1:<item>".
-  const name = surface || "embedded";
+  const prefix = `${surface || "embedded"}:`;
   for (const cache of [
     selectedReasoningCache,
     selectedReasoningProviderCache,
   ]) {
     for (const key of Array.from(cache.keys())) {
-      if (key.slice(0, key.lastIndexOf(":")) === name) cache.delete(key);
+      if (key.startsWith(prefix)) cache.delete(key);
     }
   }
 }

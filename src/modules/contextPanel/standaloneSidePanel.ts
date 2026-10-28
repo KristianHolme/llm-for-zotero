@@ -20,6 +20,9 @@
  * The "+" button shows the new-tab page: a "Side chat" row and a "History"
  * row, which turns the New tab tab into the History tab.
  *
+ * A torn-off window's (a follower's) panel is read only (`readOnly`): it
+ * shows other chats for reference and starts no side chats.
+ *
  * Pure decisions live in standaloneSidePanelState.ts; this module owns the
  * DOM and the panel lifecycles.
  */
@@ -145,9 +148,8 @@ import {
 } from "./state";
 import {
   resetSideSurfaceChoices,
-  startSideSurfaceChoices,
+  startSideSurfaceChoicesFromStandalone,
 } from "./surfaceChoices";
-import type { SideSurface, WindowSurface } from "./conversationSelection";
 import { setNeutralStatus, setStatus } from "./textUtils";
 import { copyTextToClipboard } from "./clipboard";
 import { flushPendingChatRender } from "./progressiveChatRender";
@@ -238,12 +240,11 @@ export type StandaloneSidePanelDeps = {
   /** The tab row's trailing slot that hosts the toggle. */
   toggleHost: HTMLElement;
   /**
-   * The side chats' selection surface: "side" in the standalone window,
-   * "side:<id>" in the torn-off window "torn:<id>".
+   * A torn-off window's panel: no Side chat row, no "Ask in side chat", and
+   * no side chat in the composer's quote and slash menus. History,
+   * Miscellaneous and Task progress stay.
    */
-  sideSurface: SideSurface;
-  /** The window the side chats start their choices from. */
-  windowSurface: WindowSurface;
+  readOnly?: boolean;
   getMainContext: () => StandaloneSidePanelMainContext;
   /** The same list sources the window's Search history popup uses. */
   historyList: Pick<
@@ -265,7 +266,10 @@ export type StandaloneSidePanelDeps = {
   resolveHistoryEntryPaper: (
     entry: ConversationHistoryEntry,
   ) => Zotero.Item | null;
-  /** Switch the main chat to the entry, as the Search history popup does. */
+  /**
+   * Switch the main chat to the entry, as the Search history popup does (in
+   * a torn-off window, in place). False when the main chat did not switch.
+   */
   openAsMainChat: (entry: ConversationHistoryEntry) => Promise<boolean>;
   /** Width the History pane takes from the columns row. */
   getReservedLeftWidth: () => number;
@@ -449,7 +453,8 @@ export function createStandaloneSidePanel(
     root: HTMLElement;
     startPage: HTMLElement;
     title: HTMLElement;
-    sideChatRow: HTMLButtonElement;
+    /** Null in a read-only panel. */
+    sideChatRow: HTMLButtonElement | null;
     historyRow: HTMLButtonElement;
     miscRow: HTMLButtonElement;
     progressRow: HTMLButtonElement;
@@ -1020,7 +1025,9 @@ export function createStandaloneSidePanel(
     startPage.append(
       title,
       createElement(doc, "div", "llm-start-page-subtitle", {
-        textContent: t("Ask on the side, or read a past chat"),
+        textContent: deps.readOnly
+          ? t("Read a past chat")
+          : t("Ask on the side, or read a past chat"),
       }),
     );
     const nav = createElement(
@@ -1028,13 +1035,16 @@ export function createStandaloneSidePanel(
       "div",
       "llm-standalone-primary-nav llm-standalone-side-panel-newtab-nav",
     );
-    const sideChatRow = createLaunchRow(
-      "sidechat",
-      "llm-standalone-side-panel-icon-side-chat",
-      t("Side chat"),
-      t("Ask a quick side question. Not saved."),
-    );
-    sideChatRow.addEventListener("click", () => openNewSideChat());
+    // A read-only panel starts no side chats.
+    const sideChatRow = deps.readOnly
+      ? null
+      : createLaunchRow(
+          "sidechat",
+          "llm-standalone-side-panel-icon-side-chat",
+          t("Side chat"),
+          t("Ask a quick side question. Not saved."),
+        );
+    sideChatRow?.addEventListener("click", () => openNewSideChat());
     const historyRow = createLaunchRow(
       "history",
       "llm-standalone-side-panel-icon-history",
@@ -1056,7 +1066,8 @@ export function createStandaloneSidePanel(
       t("Steps, papers and web pages the agent went through"),
     );
     progressRow.addEventListener("click", () => openTaskProgressTab());
-    nav.append(sideChatRow, historyRow, miscRow, progressRow);
+    if (sideChatRow) nav.append(sideChatRow);
+    nav.append(historyRow, miscRow, progressRow);
     startPage.appendChild(nav);
     root.appendChild(startPage);
     viewHost.appendChild(root);
@@ -1646,11 +1657,11 @@ export function createStandaloneSidePanel(
         ? createPaperPortalItem(view.basePaperItem, conversationKey, 1)
         : createGlobalPortalItem(context.libraryID, conversationKey);
     view.item = item;
-    markSidePanelBody(body, undefined, deps.sideSurface);
+    markSidePanelBody(body);
     const panelRoot = mountPanelShell({
       body,
       renderItem: item,
-      beforeRegister: () => markSidePanelBody(body, item, deps.sideSurface),
+      beforeRegister: () => markSidePanelBody(body, item),
       getMountedItem: () => item,
       rawItem: context.kind === "paper" ? view.basePaperItem : null,
       setupItem: item,
@@ -1741,9 +1752,7 @@ export function createStandaloneSidePanel(
     viewHost.appendChild(root);
     // The first side chat starts from the window's model and reasoning
     // choices; later ones share the side chats' choices.
-    if (!sideChatViews().length) {
-      startSideSurfaceChoices(deps.sideSurface, deps.windowSurface);
-    }
+    if (!sideChatViews().length) startSideSurfaceChoicesFromStandalone();
     const { tab, tabTitle } = createTab(id, "sidechat", t("Side chat"));
     const view: SideChatTabView = {
       kind: "sidechat",
@@ -1856,8 +1865,9 @@ export function createStandaloneSidePanel(
     mountSideChatBody(view);
   };
 
-  /** Opens a new side chat tab; null when the panel is full. */
+  /** Opens a new side chat tab; null when the panel is full or read only. */
   const openNewSideChat = (): SideChatTabView | null => {
+    if (deps.readOnly) return null;
     const id = nextTabId("sidechat");
     const result = openSideChatSidePanelTab(openSidePanel(tabsState), id);
     if (result.refused) {
@@ -1873,6 +1883,7 @@ export function createStandaloneSidePanel(
   };
 
   const askInSideChat = (text: string, question?: string) => {
+    if (deps.readOnly) return;
     const opened = openSidePanel(tabsState);
     const targetId = resolveAskInSideChatTab(opened);
     let view = sideChatView(targetId);
@@ -3188,7 +3199,7 @@ export function createStandaloneSidePanel(
     if (open && !activeView) {
       const page = ensureNewTabPage();
       page.root.hidden = false;
-      page.sideChatRow.disabled = full;
+      if (page.sideChatRow) page.sideChatRow.disabled = full;
       page.historyRow.disabled =
         full && !tabsState.tabs.some((tab) => tab.kind === "history");
       page.miscRow.disabled =
@@ -3386,6 +3397,8 @@ export function createStandaloneSidePanel(
       ),
     );
   const applyMainExtensions = () => {
+    // A read-only panel offers the main chat no way into a side chat.
+    if (deps.readOnly) return;
     updateChatPanelExtensions(mainBody, {
       extraAssistantActions: [
         {
@@ -3502,7 +3515,8 @@ export function createStandaloneSidePanel(
         sideChatSlashItem: undefined,
         sideChatQuote: undefined,
       });
-      resetSideSurfaceChoices(deps.sideSurface);
+      // A torn-off window's panel never started the side chats' choices.
+      if (!deps.readOnly) resetSideSurfaceChoices();
     },
   };
 }

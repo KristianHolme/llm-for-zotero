@@ -26,10 +26,11 @@
  * reads fall back to the standalone window's selection, then the embedded
  * one; like the standalone window it never writes a pref.
  *
- * The window's temporary side chat is the "side" surface; a torn window's side
- * chat is "side:<id>". It reads like its window (its own key is fixed, so
- * reads are informational) and writes no slot and no pref: remembering a side
- * chat's conversation is a no-op. Only the embedded surface writes prefs.
+ * The standalone window's temporary side chat is the "side" surface (a torn
+ * window has no side chats). It reads like the standalone window (its own key
+ * is fixed, so reads are informational) and writes no slot and no pref:
+ * remembering a side chat's conversation is a no-op. Only the embedded
+ * surface writes prefs.
  */
 import type { ConversationSystem } from "../../shared/types";
 import { invalidatePaperRestoreTargetCache } from "../../shared/paperConversationRestore";
@@ -98,15 +99,8 @@ export type ConversationSelectionMode = "global" | "paper";
 /** A torn-off chat window; the ID never contains "|". */
 export type TornSurface = `torn:${string}`;
 
-/** A side chat: the standalone window's ("side") or a torn window's. */
-export type SideSurface = "side" | `side:${string}`;
-
 /** Which chat surface a selection belongs to; see the module comment. */
-export type SelectionSurface =
-  | "embedded"
-  | "standalone"
-  | SideSurface
-  | TornSurface;
+export type SelectionSurface = "embedded" | "standalone" | "side" | TornSurface;
 
 /** The surfaces with slots of their own: the standalone and torn windows. */
 export type WindowSurface = "standalone" | TornSurface;
@@ -115,7 +109,7 @@ export type WindowSurface = "standalone" | TornSurface;
 export type ClassifiedSurface =
   | { kind: "embedded" }
   | { kind: "standalone" }
-  | { kind: "side"; surface: SideSurface }
+  | { kind: "side" }
   | { kind: "torn"; surface: TornSurface };
 
 export type GlobalSelectionScope = {
@@ -293,11 +287,8 @@ export function isTornSurface(
 /** The side chat remembers nothing, in memory or in prefs. */
 export function isSideSurface(
   surface: SelectionSurface | undefined,
-): surface is SideSurface {
-  return (
-    surface === "side" ||
-    (typeof surface === "string" && surface.startsWith("side:"))
-  );
+): surface is "side" {
+  return surface === "side";
 }
 
 /** Sort a surface by kind; a scope without a surface is embedded. */
@@ -308,7 +299,7 @@ export function classifySurface(
     return { kind: "embedded" };
   }
   if (surface === "standalone") return { kind: "standalone" };
-  if (isSideSurface(surface)) return { kind: "side", surface };
+  if (isSideSurface(surface)) return { kind: "side" };
   return { kind: "torn", surface };
 }
 
@@ -317,23 +308,18 @@ export function unhandledSurface(surface: never): never {
   throw new Error(`Unhandled selection surface: ${JSON.stringify(surface)}`);
 }
 
-/** The window a side chat belongs to: "side" → standalone, "side:<id>" → torn. */
-export function sideWindowSurface(side: SideSurface): WindowSurface {
-  return side === "side" ? "standalone" : `torn:${side.slice("side:".length)}`;
-}
-
 /**
  * A surface name read from the DOM (`data-selection-surface`), or null when
- * it names none. Window and side IDs must be non-empty and free of "|".
+ * it names none. Torn window IDs must be non-empty and free of "|".
  */
 export function parseSelectionSurface(value: unknown): SelectionSurface | null {
   if (value === "embedded" || value === "standalone" || value === "side") {
     return value;
   }
-  if (typeof value !== "string" || !/^(side|torn):[^|]+$/.test(value)) {
+  if (typeof value !== "string" || !/^torn:[^|]+$/.test(value)) {
     return null;
   }
-  return value as SideSurface | TornSurface;
+  return value as TornSurface;
 }
 
 /** The window whose slots the surface reads first, or null for the sidebar. */
@@ -346,7 +332,7 @@ function windowOf(surface: ClassifiedSurface): WindowSurface | null {
     case "torn":
       return surface.surface;
     case "side":
-      return sideWindowSurface(surface.surface);
+      return "standalone";
     default:
       return unhandledSurface(surface);
   }
@@ -474,7 +460,7 @@ function recallWindowActive(
 /**
  * The active (in-memory) conversation key for the scope, or 0. A window reads
  * its own slot first (a torn window then the standalone window's), then the
- * sidebar's; a side chat reads like its window.
+ * sidebar's; a side chat reads like the standalone window.
  */
 export function recallActive(scope: SelectionScope): number {
   const surface = classifySurface(scope.surface);
@@ -486,7 +472,7 @@ export function recallActive(scope: SelectionScope): number {
     case "torn":
       return recallWindowActive(surface.surface, scope);
     case "side":
-      return recallWindowActive(sideWindowSurface(surface.surface), scope);
+      return recallWindowActive("standalone", scope);
     default:
       return unhandledSurface(surface);
   }
@@ -636,7 +622,7 @@ export function forget(
  * reads the active map first; `"persisted"` reads only the pref. Callers own
  * any default (for example the upstream lock-implies-global rule). A window
  * reads its own mode first (a torn window then the standalone window's), then
- * the sidebar's; a side chat reads like its window.
+ * the sidebar's; a side chat reads like the standalone window.
  */
 export function recallMode(
   system: ConversationSystem,

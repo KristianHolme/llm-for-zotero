@@ -176,16 +176,16 @@ describe("request config: a panel's send uses its own surface's model", function
     );
   });
 
-  it("clearing the side chat's reasoning leaves a torn window's side chat alone", function () {
+  it("clearing one surface's reasoning leaves the torn windows' alone", function () {
     selectedReasoningCache.set(reasoningCacheKey("side", 7777), "low");
-    selectedReasoningCache.set(reasoningCacheKey("side:1", 7777), "high");
     selectedReasoningCache.set(reasoningCacheKey("torn:1", 7777), "high");
+    selectedReasoningCache.set(reasoningCacheKey("torn:12", 7777), "high");
     clearSelectedReasoningForSurface("side");
     assert.isUndefined(
       selectedReasoningCache.get(reasoningCacheKey("side", 7777)),
     );
     assert.equal(
-      selectedReasoningCache.get(reasoningCacheKey("side:1", 7777)),
+      selectedReasoningCache.get(reasoningCacheKey("torn:1", 7777)),
       "high",
     );
     clearSelectedReasoningForSurface("torn:1");
@@ -193,9 +193,9 @@ describe("request config: a panel's send uses its own surface's model", function
       selectedReasoningCache.get(reasoningCacheKey("torn:1", 7777)),
     );
     assert.equal(
-      selectedReasoningCache.get(reasoningCacheKey("side:1", 7777)),
+      selectedReasoningCache.get(reasoningCacheKey("torn:12", 7777)),
       "high",
     );
-    clearSelectedReasoningForSurface("side:1");
+    clearSelectedReasoningForSurface("torn:12");
   });
 });

@@ -453,31 +453,13 @@ describe("panel host ownership", function () {
     torn.root.dataset.selectionSurface = "torn:4";
     assert.equal(resolveSelectionSurfaceForBody(torn.body), "torn:4");
     // A value that names no surface falls back to the data-standalone rule.
-    for (const invalid of ["torn:", "nonsense", "side:"]) {
+    for (const invalid of ["torn:", "nonsense", "side:", "side:4"]) {
       torn.root.dataset.selectionSurface = invalid;
       assert.equal(resolveSelectionSurfaceForBody(torn.body), "standalone");
     }
     const library = fakePanel({ conversationKey: 101, paperItemID: 101 });
     library.root.dataset.selectionSurface = "bogus";
     assert.equal(resolveSelectionSurfaceForBody(library.body), "embedded");
-  });
-
-  it("puts a torn window's side chat on its own side surface", function () {
-    const paper = fakePaper(101);
-    const side = fakePanel({
-      conversationKey: 1_900_000_002,
-      paperItemID: 101,
-    });
-    markSidePanelBody(side.body, undefined, "side:4");
-    assert.isTrue(isSidePanelBody(side.body));
-    assert.equal(resolveSelectionSurfaceForBody(side.body), "side:4");
-    assert.equal(evaluatePanelOwnership(side.body), "match");
-    markSidePanelBody(side.body, paper, "side:4");
-    assert.equal(getPanelHostBinding(side.body)?.surface, "side");
-    assert.equal(getPanelHostBinding(side.body)?.selectionSurface, "side:4");
-    assert.equal(resolveSelectionSurfaceForBody(side.body), "side:4");
-    assert.isTrue(isSidePanelBody(side.body));
-    clearPanelHostBinding(side.body);
   });
 });
 

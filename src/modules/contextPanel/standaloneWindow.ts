@@ -55,12 +55,10 @@ import {
   recallMode,
   remember,
   rememberMode,
-  type SideSurface,
   type WindowSurface,
 } from "./conversationSelection";
 import {
   clearTornSurfaceChoices,
-  resetSideSurfaceChoices,
   startStandaloneSurfaceChoicesFromSidebar,
   startTornSurfaceChoices,
   demoteConversationSystemOnEverySurface,
@@ -1023,10 +1021,6 @@ function openChatWindowInstance(
   const minWindowHeight = linkedToReader
     ? STANDALONE_MIN_HEIGHT_PX
     : TORN_WINDOW_MIN_HEIGHT_PX;
-  // A torn window's side chat: "side:<id>" for its "torn:<id>".
-  const sideSurface: SideSurface = tornSurface
-    ? `side:${tornSurface.slice("torn:".length)}`
-    : "side";
   let currentConversationSystem: ConversationSystem = params.conversationSystem;
   const isClaudeConversationSystem = () =>
     currentConversationSystem === "claude_code";
@@ -4072,14 +4066,15 @@ function openChatWindowInstance(
       };
 
       // Third column: History (read-only past chats) and a temporary side
-      // chat that follows the main chat's paper or library.
+      // chat that follows the main chat's paper or library. A torn-off
+      // window's is read only: no side chats, and "Open as main chat" loads
+      // the chat into this window (or brings forward the window holding it).
       standaloneSidePanel = createStandaloneSidePanel({
         win: newWin,
         lowerArea,
         mainBody: contentArea,
         toggleHost: tabRowTrailing,
-        sideSurface,
-        windowSurface,
+        readOnly: !linkedToReader,
         getMainContext: () => ({
           mode: standaloneMode,
           conversationKey: activeConversationKey,
@@ -4845,6 +4840,12 @@ function openChatWindowInstance(
           surrendered: standaloneSurrenderedDeletions.has(entry.id),
           dropped: Boolean(event.dropped),
         });
+        if (action.type === "leave" && !linkedToReader) {
+          // A torn-off window holds one chat: it closes with it, and never
+          // falls back to another chat (which another window may hold).
+          newWin.close();
+          return;
+        }
         if (action.type === "leave") {
           const surfaceEntry = toStandaloneDeletionSurfaceEntry(entry);
           const left =
@@ -6072,27 +6073,24 @@ function openChatWindowInstance(
         cleanupStandaloneTabFollow = () =>
           Zotero.Notifier.unregisterObserver(tabFollowObserverID);
       } else {
-        // A torn-off window's own paper moved to the trash (or deleted) is
-        // gone for it, as a paper Zotero stops showing is for the standalone
-        // window: it shows Library chat and the no-paper status, and Paper
-        // chat has no paper until the user picks one in this window.
-        const forgetTrashedOwnPaper = () => {
+        // A torn-off window's own paper moved to the trash (or deleted)
+        // closes the window when it holds that paper's chat; the chat stays
+        // in history. A library chat only forgets the paper it came from.
+        const closeForTrashedOwnPaper = () => {
           if (cancelled || newWin.closed || !currentBasePaperItem) return;
           const paper = Zotero.Items.get(
             Number(currentBasePaperItem.id || 0),
           ) as Zotero.Item | false;
           if (paper && !(paper as any).deleted) return;
+          if (standaloneMode === "paper") {
+            newWin.close();
+            return;
+          }
           currentRawContextItem = null;
           currentBasePaperItem = null;
           currentPaperItem = null;
           syncPaperTabLabel();
-          if (standaloneMode !== "paper") {
-            updateContentTitle();
-            return;
-          }
-          void restoreStandaloneOpenConversation(false).then(() => {
-            if (!cancelled) showNoPaperChatSourceStatus();
-          });
+          updateContentTitle();
         };
         const paperWatchObserverID = Zotero.Notifier.registerObserver(
           {
@@ -6101,7 +6099,7 @@ function openChatWindowInstance(
                 return;
               const paperID = Number(currentBasePaperItem?.id || 0);
               if (!paperID || !ids.some((id) => Number(id) === paperID)) return;
-              newWin.setTimeout(forgetTrashedOwnPaper, 0);
+              newWin.setTimeout(closeForTrashedOwnPaper, 0);
             },
           },
           ["item"],
@@ -6537,7 +6535,6 @@ function openChatWindowInstance(
       disposeTornRegistration?.();
       clearTornSelection(tornSurface);
       clearTornSurfaceChoices(tornSurface);
-      resetSideSurfaceChoices(sideSurface);
     }
     releaseDisconnectedEmbeddedPanels(contentArea as Element | null);
   };

@@ -191,7 +191,6 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import {
-  isSideSurface,
   isTornSurface,
   recall,
   recallActive,
@@ -784,15 +783,11 @@ export function setupHandlers(
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
   if (__env__ !== "production" && !getPanelHostBinding(body)) {
-    // A body declares its own surface (a torn window's "torn:<id>", its
-    // side chat's "side:<id>"); the standalone window's are the defaults.
+    // A body declares its own surface (a torn window's "torn:<id>"); the
+    // standalone window's is the default.
     const declaredSurface = selectionSurface();
     if (isSidePanel) {
-      bindSidePanelHost(
-        body,
-        rawPanelItem,
-        isSideSurface(declaredSurface) ? declaredSurface : "side",
-      );
+      bindSidePanelHost(body, rawPanelItem);
     } else if (existingPanelRoot?.dataset.standalone === "true") {
       bindStandalonePanelHost(
         body,

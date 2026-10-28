@@ -195,7 +195,7 @@ import {
   discardEphemeralConversation,
   setEphemeralBackgroundContextProvider,
 } from "./ephemeralConversations";
-import { startSideSurfaceChoices } from "./surfaceChoices";
+import { startSideSurfaceChoicesFromStandalone } from "./surfaceChoices";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
 import {
   decorateAssistantCitationLinks,
@@ -1289,19 +1289,19 @@ async function renderSidePanelForItem(input: {
     const text = input.backgroundContext;
     setEphemeralBackgroundContextProvider(conversationKey, () => text);
   }
-  startSideSurfaceChoices("side", "standalone");
+  startSideSurfaceChoicesFromStandalone();
   const doc = getWorkflowDocument();
   const body = appendHost(doc);
   const panelId = `workflow-side-panel-${++panelCounter}`;
   body.dataset.workflowPanelId = panelId;
-  markSidePanelBody(body, undefined, "side");
+  markSidePanelBody(body);
   mountPanelShell({
     body,
     renderItem: sideItem,
     getMountedItem: () => sideItem,
     rawItem: item,
     setupItem: sideItem,
-    beforeRegister: () => markSidePanelBody(body, sideItem, "side"),
+    beforeRegister: () => markSidePanelBody(body, sideItem),
   });
   await ensureConversationLoaded(sideItem, { body });
   refreshChat(body, sideItem);

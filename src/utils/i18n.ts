@@ -204,6 +204,7 @@ const zhCN: Record<string, string> = {
   "Ask a quick side question. Not saved.": "快速提一个旁支问题，不会保存。",
   "Read another past chat, read-only": "以只读方式查看另一个过往对话",
   "Ask on the side, or read a past chat": "在侧边提问，或查看过往对话",
+  "Read a past chat": "查看过往对话",
   History: "历史记录",
   "Read-only": "只读",
   "Quote in main chat": "在主对话中引用",

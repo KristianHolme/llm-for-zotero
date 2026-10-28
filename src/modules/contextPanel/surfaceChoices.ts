@@ -28,12 +28,12 @@
  *   the standalone window's. It never takes a WebChat model entry: WebChat
  *   drives one browser session, which the standalone window owns.
  *
- * - Side (a window's temporary side chat: "side" for the standalone window,
- *   "side:<id>" for a torn one) keeps its own in-memory choices, copied from
- *   its window's when the side chat starts (startSideSurfaceChoices) and never
- *   written to prefs. It always runs on the API runtime ("upstream") and never
- *   takes a WebChat model entry: Claude Code, Codex, and WebChat own
- *   provider-side state that a never-saved chat cannot clean up.
+ * - Side (the standalone window's temporary side chat) keeps its own
+ *   in-memory choices, copied from the window's when the side chat starts
+ *   (startSideSurfaceChoicesFromStandalone) and never written to prefs. It
+ *   always runs on the API runtime ("upstream") and never takes a WebChat
+ *   model entry: Claude Code, Codex, and WebChat own provider-side state that
+ *   a never-saved chat cannot clean up. A torn window starts no side chats.
  *
  * Only the embedded surface writes prefs.
  *
@@ -75,10 +75,8 @@ import {
   classifySurface,
   isSideSurface,
   isTornSurface,
-  sideWindowSurface,
   unhandledSurface,
   type SelectionSurface,
-  type SideSurface,
   type TornSurface,
   type WindowSurface,
 } from "./conversationSelection";
@@ -101,10 +99,8 @@ import type { ChatRuntimeMode, ReasoningLevelSelection } from "./types";
 const standaloneChoices = new Map<string, unknown>();
 /** Each torn window's choices; each keyed like standaloneChoices. */
 const tornChoices = new Map<TornSurface, Map<string, unknown>>();
-/** Each side chat surface's choices; each keyed like standaloneChoices. */
-const sideChoices = new Map<SideSurface, Map<string, unknown>>();
-/** The window each side chat surface started from (startSideSurfaceChoices). */
-const sideOrigins = new Map<SideSurface, WindowSurface>();
+/** The side chat's choices; keyed like standaloneChoices. */
+const sideChoices = new Map<string, unknown>();
 
 function storeFor<K>(
   stores: Map<K, Map<string, unknown>>,
@@ -118,11 +114,6 @@ function storeFor<K>(
   return store;
 }
 
-/** The window a side chat reads when it holds no value of its own. */
-function windowOfSide(side: SideSurface): WindowSurface {
-  return sideOrigins.get(side) ?? sideWindowSurface(side);
-}
-
 type SurfaceChoice<T> = {
   get: (surface?: SelectionSurface) => T;
   set: (value: T, surface?: SelectionSurface) => void;
@@ -130,8 +121,8 @@ type SurfaceChoice<T> = {
   snapshot: () => void;
   /** Copy the standalone window's current value into a torn window's store. */
   snapshotTorn: (surface: TornSurface) => void;
-  /** Copy a window's current value into a side chat's store. */
-  snapshotSide: (side: SideSurface, from: WindowSurface) => void;
+  /** Copy the standalone window's current value into the side chat's store. */
+  snapshotSide: () => void;
 };
 
 type KeyedSurfaceChoice<T> = {
@@ -141,8 +132,8 @@ type KeyedSurfaceChoice<T> = {
   snapshot: () => void;
   /** Copy the standalone window's values (every key) into a torn window's store. */
   snapshotTorn: (surface: TornSurface) => void;
-  /** Copy a window's current values (every key) into a side chat's store. */
-  snapshotSide: (side: SideSurface, from: WindowSurface) => void;
+  /** Copy the standalone window's values (every key) into the side chat's store. */
+  snapshotSide: () => void;
 };
 
 /**
@@ -178,8 +169,6 @@ function surfaceChoice<T>(params: {
     if (store?.has(params.name)) return store.get(params.name) as T;
     return mappedOr(tornValue, getStandalone());
   };
-  const getWindow = (window: WindowSurface): T =>
-    window === "standalone" ? getStandalone() : getTorn(window);
   const putMapped = (
     store: Map<string, unknown>,
     mapped: T | null,
@@ -198,11 +187,11 @@ function surfaceChoice<T>(params: {
           return getStandalone();
         case "torn":
           return getTorn(target.surface);
-        case "side": {
-          const store = sideChoices.get(target.surface);
-          if (store?.has(params.name)) return store.get(params.name) as T;
-          return mappedOr(sideValue, getWindow(windowOfSide(target.surface)));
-        }
+        case "side":
+          if (sideChoices.has(params.name)) {
+            return sideChoices.get(params.name) as T;
+          }
+          return mappedOr(sideValue, getStandalone());
         default:
           return unhandledSurface(target);
       }
@@ -227,11 +216,7 @@ function surfaceChoice<T>(params: {
           );
           return;
         case "side":
-          putMapped(
-            storeFor(sideChoices, target.surface),
-            sideValue(normalized),
-            false,
-          );
+          putMapped(sideChoices, sideValue(normalized), false);
           return;
         default:
           unhandledSurface(target);
@@ -247,8 +232,8 @@ function surfaceChoice<T>(params: {
         true,
       );
     },
-    snapshotSide: (side, from) => {
-      putMapped(storeFor(sideChoices, side), sideValue(getWindow(from)), true);
+    snapshotSide: () => {
+      putMapped(sideChoices, sideValue(getStandalone()), true);
     },
   };
 }
@@ -282,11 +267,10 @@ function keyedSurfaceChoice<T>(params: {
     const torn = window === "standalone" ? undefined : tornChoices.get(window);
     return torn ? [torn, standaloneChoices] : [standaloneChoices];
   };
-  const sideStores = (side: SideSurface): Map<string, unknown>[] => {
-    const store = sideChoices.get(side);
-    const stores = windowStores(windowOfSide(side));
-    return store ? [store, ...stores] : stores;
-  };
+  const sideStores = (): Map<string, unknown>[] => [
+    sideChoices,
+    ...windowStores("standalone"),
+  ];
   // The first store holding the slot answers; a store that copied its source
   // without this slot reads `unset`.
   const readSlot = (
@@ -347,7 +331,7 @@ function keyedSurfaceChoice<T>(params: {
         case "torn":
           return read(windowStores(target.surface), key);
         case "side":
-          return read(sideStores(target.surface), key);
+          return read(sideStores(), key);
         default:
           return unhandledSurface(target);
       }
@@ -369,7 +353,7 @@ function keyedSurfaceChoice<T>(params: {
           storeFor(tornChoices, target.surface).set(surfaceKey, normalized);
           return;
         case "side":
-          storeFor(sideChoices, target.surface).set(surfaceKey, normalized);
+          sideChoices.set(surfaceKey, normalized);
           return;
         default:
           unhandledSurface(target);
@@ -385,8 +369,8 @@ function keyedSurfaceChoice<T>(params: {
     snapshotTorn: (surface) => {
       copyInto(storeFor(tornChoices, surface), windowStores("standalone"));
     },
-    snapshotSide: (side, from) => {
-      copyInto(storeFor(sideChoices, side), windowStores(from));
+    snapshotSide: () => {
+      copyInto(sideChoices, windowStores("standalone"));
     },
   };
 }
@@ -579,25 +563,18 @@ export function clearTornSurfaceChoices(surface: TornSurface): void {
 }
 
 /**
- * A new side chat starts from its window's current values (its model,
+ * A new side chat starts from the window's current values (its model,
  * reasoning levels, and Chat/Agent default), always on the API runtime and
  * never on a WebChat entry. Later changes on either surface stay apart.
  */
-export function startSideSurfaceChoices(
-  side: SideSurface,
-  from: WindowSurface,
-): void {
-  sideChoices.set(side, new Map<string, unknown>());
-  sideOrigins.set(side, from);
-  for (const choice of Object.values(surfaceChoices)) {
-    choice.snapshotSide(side, from);
-  }
+export function startSideSurfaceChoicesFromStandalone(): void {
+  sideChoices.clear();
+  for (const choice of Object.values(surfaceChoices)) choice.snapshotSide();
 }
 
-/** Forget one side chat surface's choices; reads fall back to its window's. */
-export function resetSideSurfaceChoices(side: SideSurface): void {
-  sideChoices.delete(side);
-  sideOrigins.delete(side);
+/** Forget every side-chat choice; reads fall back to the window's. */
+export function resetSideSurfaceChoices(): void {
+  sideChoices.clear();
 }
 
 /**

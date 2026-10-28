@@ -824,18 +824,6 @@ describe("conversationSelection", function () {
       assert.isTrue(isRemembered(paperScope("embedded"), 611));
       assert.isFalse(isRemembered(paperScope("embedded"), 612));
     });
-
-    it("a torn window's side chat remembers nothing and reads its window first", function () {
-      remember(paperScope("standalone"), 621);
-      assert.equal(recallActive(paperScope("side:1")), 621);
-      remember(paperScope("torn:1"), 622);
-      assert.equal(recallActive(paperScope("side:1")), 622);
-      assert.equal(recallActive(paperScope("side")), 621);
-      remember(paperScope("side:1"), 623);
-      rememberMode("upstream", 1, "global", { surface: "side:1" });
-      assert.equal(recallActive(paperScope("torn:1")), 622);
-      assert.equal(tornModeByLibrary.size, 0);
-    });
   });
 
   it("keeps the upstream webchat guard: an isolated key is remembered in the map only", function () {
