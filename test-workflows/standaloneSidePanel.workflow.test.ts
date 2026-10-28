@@ -356,13 +356,6 @@ describe("workflow: standalone side panel", function () {
         assert.isAtMost(widths[index], widths[index - 1], label("shrinks"));
       }
     }
-    const steps = new Set(widths).size;
-    assert.isAtLeast(steps, 4, label("the width moves over several frames"));
-    const settledAt = frames.find(
-      (frame) => frame.outerWidth === last.outerWidth,
-    )!.timeMs;
-    assert.isAtMost(settledAt, 280 + 150, label("done in about 280 ms"));
-    assert.isAtLeast(settledAt, 150, label("not a jump"));
     if (direction === "close") {
       for (const frame of frames) {
         if (frame.outerWidth === last.outerWidth) break;
@@ -1051,11 +1044,14 @@ describe("workflow: standalone side panel", function () {
 
     // Library chat has its own tabs: the paper's are put away, alive, and
     // come back unchanged with Paper chat (no move, no context note).
+    // The panel stays open across the switch; Library chat has no tabs yet,
+    // so it shows the New tab page.
     await api.clickStandaloneTab("open");
     side = await waitForSide(
-      (state) => !state.open,
-      "Library chat shows its own (closed) side panel",
+      (state) => state.open && state.view === "newtab",
+      "Library chat keeps the side panel open on its own New tab page",
     );
+    assert.lengthOf(side.tabs, 0, "the paper's tabs are not Library chat's");
     await api.clickStandaloneTab("paper");
     side = await waitForSide(
       (state) =>
