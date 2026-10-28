@@ -83,6 +83,35 @@ const zhCN: Record<string, string> = {
     "DeepSeek 搜索暂时不可用，请稍后重试。",
   "DeepSeek search needs the API key of an official DeepSeek model profile.":
     "DeepSeek 搜索需要官方 DeepSeek 模型配置中的 API 密钥。",
+  // ── Built-in action and skill descriptions (display only) ───────────────
+  "Scan the active library for bibliographic metadata issues, then fetch canonical metadata and page through review cards for supported fixes.":
+    "扫描当前文库中的书目元数据问题，获取权威元数据，并逐页展示可支持的修复供你审核。",
+  "Find unfiled Zotero items and page through batch-assignment dialogs to move them into collections. The agent proposes destinations from fresh collection data; the user reviews each page before edits are applied.":
+    "查找未分类的 Zotero 条目，分批审核并移入分类。助手根据最新分类信息推荐目标位置，每页修改均由你审核后应用。",
+  "Suggest tags for Zotero bibliographic items and page through editable batch tag-review dialogs. A click with no explicit scope starts on the active library with native review.":
+    "为 Zotero 文献条目建议标签，并分批展示可编辑的标签供你审核。未指定范围时，点击后从当前文库开始，在 Zotero 内审核。",
+  "Find papers related to a specific Zotero item using OpenAlex recommendations, references, or citations. Presents results for review and imports the selected papers.":
+    "通过 OpenAlex 推荐、参考文献或引用查找与指定 Zotero 条目相关的论文。展示结果供你审核，并导入选中的论文。",
+  "Audit targeted papers for missing bibliographic metadata, fetch canonical metadata from external sources, and open one review card with the proposed field updates.":
+    "检查目标论文缺失的书目元数据，从外部来源获取权威元数据，并在审核卡片中展示建议的字段更新。",
+  "Analyze your whole library or collection with statistics":
+    "对整个文库或指定分类进行统计分析",
+  "Compare selected papers or collection papers by theme, methodology, or findings":
+    "按主题、研究方法或研究发现比较选中论文或分类中的论文",
+  "Extract, crop, or analyze figures, tables, and diagrams from papers":
+    "提取、裁剪或分析论文中的图片、表格和示意图",
+  "Retrieve missing evidence for specific methods, results, or verification questions in selected papers or collections. Clarification or translation of sufficient supplied text needs no retrieval workflow.":
+    "为选中论文或分类中的具体方法、结果或核实问题检索缺失证据。若已提供足够文本，仅作解释或翻译时无需检索。",
+  "Create, save, or edit a Zotero note or Markdown note, including requested figures or an existing answer. Use only when the user explicitly requests a note.":
+    "创建、保存或编辑 Zotero 笔记或 Markdown 笔记，可包含所需图片或已有回答。仅在你明确要求生成笔记时使用。",
+  "Structured scientific review with thematic synthesis and citations":
+    "撰写结构化学术综述，综合主题并标注文献引用",
+  "Import cited papers into your Zotero library by DOI":
+    "通过 DOI 将引用的论文导入 Zotero 文库",
+  "Sort papers into folders or tags": "按分类或标签整理论文",
+  "Compact the current Codex context.": "压缩当前 Codex 上下文。",
+  "Compact the current agent context.": "压缩当前助手上下文。",
+
   // ── Shortcut actions ────────────────────────────────────────────────────
   Summarize: "摘要",
   "Key Points": "要点",
