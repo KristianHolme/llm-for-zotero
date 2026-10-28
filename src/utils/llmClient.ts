@@ -3032,6 +3032,7 @@ async function parseGeminiNativeStreamResponse(
             usageMetadata?: {
               promptTokenCount?: number;
               candidatesTokenCount?: number;
+              thoughtsTokenCount?: number;
               totalTokenCount?: number;
               cachedContentTokenCount?: number;
             };
@@ -3063,7 +3064,8 @@ async function parseGeminiNativeStreamResponse(
               onUsage({
                 promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 completionTokens:
-                  parsed.usageMetadata.candidatesTokenCount ?? 0,
+                  (parsed.usageMetadata.candidatesTokenCount ?? 0) +
+                  (parsed.usageMetadata.thoughtsTokenCount ?? 0),
                 totalTokens: total,
                 ...cacheUsage,
                 contextTokens: parsed.usageMetadata.promptTokenCount ?? 0,
