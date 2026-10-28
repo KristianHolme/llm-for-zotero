@@ -4820,6 +4820,43 @@
   margin-right: 0;
 }
 
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-unlinked-icon:hover,
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-unlinked-icon:focus-visible {
+  color: var(--fill-primary);
+}
+
+/* The unlinked icon's hover card: one per follower window, under the icon. */
+.llm-unlinked-card {
+  position: fixed;
+  z-index: 2147483600;
+  box-sizing: border-box;
+  max-width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--llm-popup-surface-border);
+  border-radius: 8px;
+  background: var(--llm-popup-surface-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: var(--llm-fs-12);
+  line-height: calc(16px * var(--llm-font-scale));
+  color: var(--fill-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+.llm-unlinked-card[hidden] {
+  display: none;
+}
+
+.llm-unlinked-card-title {
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: var(--fill-primary);
+}
+
 /* The More menu reuses the chat row menu's look; this only places it and
  * marks Task progress while it shows. */
 .llm-follower-more-menu [aria-checked="true"]::after {

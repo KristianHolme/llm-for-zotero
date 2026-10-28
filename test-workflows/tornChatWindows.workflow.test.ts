@@ -898,13 +898,14 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         ),
         `${context}: the icon comes before the title`,
       );
-      assert.equal(
-        icon!.title,
-        "This chat's context does not switch with the PDF reader tab in Zotero.",
+      assert.isFalse(
+        icon!.hasAttribute("title"),
+        `${context}: the icon has no title (the hover card replaces it)`,
       );
+      assert.equal(icon!.getAttribute("tabindex"), "0");
       assert.equal(
         icon!.getAttribute("aria-label"),
-        "This chat's context does not switch with the PDF reader tab in Zotero.",
+        "Not linked to the PDF reader",
       );
       assert.equal(
         windowRoot(win)?.getAttribute("data-reader-link"),
@@ -930,6 +931,95 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.equal(stateOf(torn).conversationKind, "global");
     assertIconBeforeTitle(torn, "library chat");
     assert.isNull(iconOf(standalone), "the leader still has no icon");
+  });
+
+  // ── W10b ─────────────────────────────────────────────────────────────────
+
+  it("W10b: the unlinked icon opens a hover card on hover and focus, closes on leave, blur and Escape, and the leader has none", async function () {
+    const { standalone } = await setupTornOnA("Torn W10b");
+    const win = tornWin()!;
+    const doc = win.document;
+    const icon = doc.querySelector(
+      "span.llm-standalone-unlinked-icon",
+    ) as HTMLElement;
+    const describedBy = icon.getAttribute("aria-describedby");
+    assert.isOk(describedBy, "the icon names its card");
+    const cardOf = () => doc.getElementById(describedBy!) as HTMLElement | null;
+    const open = () => isShown(cardOf());
+    const fire = (type: string) =>
+      icon.dispatchEvent(new (win as any).MouseEvent(type, { bubbles: false }));
+    assert.isFalse(open(), "the card starts closed");
+    assert.equal(cardOf()?.getAttribute("role"), "tooltip");
+
+    fire("mouseenter");
+    await until(open, () => "the card opens after a hover");
+    const card = cardOf()!;
+    const text = textOf(card);
+    assert.include(text, "Not linked to the PDF reader");
+    assert.include(
+      text,
+      "This chat keeps its own context. Switching PDF tabs in Zotero does not change it.",
+    );
+    const iconRect = icon.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+    assert.isAtLeast(
+      cardRect.top,
+      iconRect.bottom,
+      "the card is below the icon",
+    );
+    assert.isAtLeast(cardRect.left, 0);
+    assert.isAtMost(cardRect.right, win.innerWidth, "inside the window");
+    assert.isAtMost(cardRect.width, 241);
+
+    fire("mouseleave");
+    await until(
+      () => !open(),
+      () => "the card closes after the pointer leaves",
+    );
+
+    // The scaffold's window is not the active one, so a real focus() may
+    // not fire the event; dispatch it.
+    icon.dispatchEvent(new (win as any).FocusEvent("focus"));
+    await until(open, () => "the card opens on focus");
+    doc.dispatchEvent(
+      new (win as any).KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+      }),
+    );
+    await until(
+      () => !open(),
+      () => "Escape closes the card",
+    );
+
+    icon.dispatchEvent(new (win as any).FocusEvent("focus"));
+    await until(open, () => "the card opens again");
+    icon.dispatchEvent(new (win as any).FocusEvent("blur"));
+    await until(
+      () => !open(),
+      () => "blur closes the card",
+    );
+
+    assert.isNull(
+      standalone.document.getElementById(describedBy!),
+      "the leader has no hover card",
+    );
+  });
+
+  // ── W10c ─────────────────────────────────────────────────────────────────
+
+  it("W10c: every window has a page tooltip element that its tooltip attribute names, so title attributes show", async function () {
+    const { standalone } = await setupTornOnA("Torn W10c");
+    for (const [name, win] of [
+      ["follower", tornWin()!],
+      ["leader", standalone],
+    ] as const) {
+      const attr = win.document.documentElement.getAttribute("tooltip");
+      assert.isOk(attr, `${name}: the window names a tooltip`);
+      const tip = win.document.querySelector('tooltip[page="true"]');
+      assert.isOk(tip, `${name}: a page tooltip exists`);
+      assert.equal(tip!.id, attr, `${name}: the ids match`);
+    }
   });
 
   // ── W24 ──────────────────────────────────────────────────────────────────

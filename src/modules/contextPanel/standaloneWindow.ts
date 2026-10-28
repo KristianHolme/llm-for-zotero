@@ -423,6 +423,94 @@ export async function getFollowerTitle(
   }
 }
 
+const UNLINKED_CARD_ID = "llmforzotero-unlinked-card";
+const UNLINKED_CARD_SHOW_DELAY_MS = 250;
+const UNLINKED_CARD_HIDE_GRACE_MS = 150;
+
+/**
+ * A follower's unlinked icon explains itself in a small hover card: it opens
+ * after a short hover or on keyboard focus, sits under the icon inside the
+ * window, and closes on leave (with a grace so the pointer can reach the
+ * card), blur, Escape or when the window loses focus. One card per window.
+ */
+function bindUnlinkedHoverCard(
+  doc: Document,
+  root: HTMLElement,
+  icon: HTMLElement,
+): void {
+  const win = doc.defaultView;
+  if (!win) return;
+  const card = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  card.id = UNLINKED_CARD_ID;
+  card.className = "llm-unlinked-card";
+  card.setAttribute("role", "tooltip");
+  card.hidden = true;
+  const heading = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  heading.className = "llm-unlinked-card-title";
+  heading.textContent = t("Not linked to the PDF reader");
+  const body = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  body.className = "llm-unlinked-card-body";
+  body.textContent = t(
+    "This chat keeps its own context. Switching PDF tabs in Zotero does not change it.",
+  );
+  card.append(heading, body);
+  root.append(card);
+
+  let showTimer: number | undefined;
+  let hideTimer: number | undefined;
+  const clearTimers = () => {
+    if (showTimer !== undefined) win.clearTimeout(showTimer);
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    showTimer = hideTimer = undefined;
+  };
+  const hide = () => {
+    clearTimers();
+    card.hidden = true;
+  };
+  const show = () => {
+    clearTimers();
+    card.hidden = false;
+    const margin = 8;
+    const iconRect = icon.getBoundingClientRect();
+    const width = card.offsetWidth;
+    const left = Math.max(
+      margin,
+      Math.min(iconRect.left, win.innerWidth - width - margin),
+    );
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(iconRect.bottom + 6)}px`;
+  };
+  const scheduleShow = (delay: number) => {
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    hideTimer = undefined;
+    if (!card.hidden || showTimer !== undefined) return;
+    showTimer = win.setTimeout(show, delay);
+  };
+  const scheduleHide = () => {
+    if (showTimer !== undefined) win.clearTimeout(showTimer);
+    showTimer = undefined;
+    if (card.hidden || hideTimer !== undefined) return;
+    hideTimer = win.setTimeout(hide, UNLINKED_CARD_HIDE_GRACE_MS);
+  };
+  const keepOpen = () => {
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    hideTimer = undefined;
+  };
+
+  icon.addEventListener("mouseenter", () =>
+    scheduleShow(UNLINKED_CARD_SHOW_DELAY_MS),
+  );
+  icon.addEventListener("mouseleave", scheduleHide);
+  card.addEventListener("mouseenter", keepOpen);
+  card.addEventListener("mouseleave", scheduleHide);
+  icon.addEventListener("focus", show);
+  icon.addEventListener("blur", hide);
+  doc.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !card.hidden) hide();
+  });
+  win.addEventListener("blur", hide);
+}
+
 /**
  * A follower's kind line: "Paper chat · <short label>" with the paper's full
  * title as its tooltip, or "Library chat · <library name>".
@@ -1611,13 +1699,18 @@ function openChatWindowInstance(
       if (!linkedToReader) {
         unlinkedIcon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
         unlinkedIcon.className = "llm-standalone-unlinked-icon";
-        const unlinkedLabel = t(
-          "This chat's context does not switch with the PDF reader tab in Zotero.",
+        // A hover card (built below) explains the icon; a title would add a
+        // native tooltip on top of it.
+        unlinkedIcon.tabIndex = 0;
+        unlinkedIcon.setAttribute(
+          "aria-label",
+          t("Not linked to the PDF reader"),
         );
-        unlinkedIcon.title = unlinkedLabel;
-        unlinkedIcon.setAttribute("aria-label", unlinkedLabel);
+        unlinkedIcon.setAttribute("aria-describedby", UNLINKED_CARD_ID);
         root.dataset.readerLink = "unlinked";
       }
+
+      if (unlinkedIcon) bindUnlinkedHoverCard(doc, root, unlinkedIcon);
 
       const contentTitleBarSpacer = doc.createElementNS(
         HTML_NS,
