@@ -1696,15 +1696,13 @@ function openChatWindowInstance(
         );
         iconFollowerMore.setAttribute("aria-haspopup", "menu");
         iconFollowerMore.setAttribute("aria-expanded", "false");
-        // One row. Left: the window buttons and a two-line heading (the
-        // unlinked icon and the chat's title, then the kind line). Right:
-        // History, then the side panel toggle and Open in main window (added
-        // below, once the side panel exists), then More. Task progress,
-        // Export and Delete live in the More menu and keep no button in the
-        // page: the menu runs the buttons' own handlers.
+        // One row. Left: the window buttons, the unlinked icon and the chat's
+        // title. Right: History, then the side panel toggle and Open in main
+        // window (added below, once the side panel exists), then More. Task
+        // progress, Export and Delete live in the More menu and keep no
+        // button in the page: the menu runs the buttons' own handlers. The
+        // kind line sits under the row, at the top left of the chat.
         contentTitleText.classList.add("llm-follower-title");
-        const heading = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
-        heading.className = "llm-follower-heading";
         const titleLine = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
         titleLine.className = "llm-follower-title-line";
         if (unlinkedIcon) titleLine.append(unlinkedIcon);
@@ -1725,8 +1723,7 @@ function openChatWindowInstance(
         ) as HTMLSpanElement;
         followerKindText.className = "llm-follower-kind-text";
         followerKindLine.append(followerKindIcon, followerKindText);
-        heading.append(titleLine, followerKindLine);
-        tabRowLeading.append(heading);
+        tabRowLeading.append(titleLine);
         tabRowTrailing.append(iconFollowerHistory);
       }
 
@@ -1741,9 +1738,12 @@ function openChatWindowInstance(
         iconTaskProgress,
       );
 
-      // A follower has no second row.
+      // A follower has no second header row; its kind line goes under the
+      // top row instead.
       if (linkedToReader) {
         contentWrapper.append(tabRow, contentTitleBar, contentArea);
+      } else if (followerKindLine) {
+        contentWrapper.append(tabRow, followerKindLine, contentArea);
       } else {
         contentWrapper.append(tabRow, contentArea);
       }

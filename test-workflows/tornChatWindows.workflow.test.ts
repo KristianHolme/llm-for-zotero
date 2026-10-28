@@ -1001,26 +1001,14 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
     assert.equal(history.title, "History");
 
-    // One row: window buttons, icon, title and kind line on the left;
-    // History, side panel, Open in main window and More on the right.
+    // One row: window buttons, icon and title on the left; History, side
+    // panel, Open in main window and More on the right. The kind line is
+    // not in it: it sits under the row, at the top left of the chat.
     const row = doc.querySelector(".llm-standalone-tab-row")!;
-    for (const node of [
-      icon,
-      title,
-      kindLine,
-      history,
-      sidePanel,
-      openMain,
-      more,
-    ]) {
+    for (const node of [icon, title, history, sidePanel, openMain, more]) {
       assert.isTrue(row.contains(node), `${node.className} is in the one row`);
     }
-    assert.approximately(
-      row.getBoundingClientRect().height,
-      52,
-      1,
-      "the row is about 52 px tall",
-    );
+    assert.isFalse(row.contains(kindLine), "the kind line is under the row");
     assert.isNull(
       doc.querySelector(".llm-standalone-content-title"),
       "the follower has no second header row",
@@ -1046,12 +1034,22 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         .top,
       "the composer is below the row",
     );
-    const titleRect = title.getBoundingClientRect();
     const kindRect = kindLine.getBoundingClientRect();
     assert.isAtLeast(
       kindRect.top,
-      titleRect.bottom - 1,
-      "the kind line is below the title",
+      rowRect.bottom - 1,
+      "the kind line is below the row's divider",
+    );
+    assert.isBelow(
+      kindRect.bottom,
+      (doc.querySelector("#llm-input") as HTMLElement).getBoundingClientRect()
+        .top,
+      "the kind line is above the composer",
+    );
+    assert.isAtMost(
+      kindRect.left,
+      title.getBoundingClientRect().left,
+      "the kind line starts at the left, not under the title",
     );
     // Task progress, Export and Delete have no button outside the menu.
     for (const selector of [

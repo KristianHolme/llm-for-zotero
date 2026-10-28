@@ -4692,16 +4692,16 @@
 }
 
 /* --- Follower window: one chat under one compact row ---------------------
- * Left: window buttons, then a two-line heading (unlinked icon and the chat's
- * title, then the kind line). Right: History, side panel toggle, Open in main
- * window and More. The row is the one that moves the window.
+ * Left: window buttons, the unlinked icon and the chat's title. Right:
+ * History, side panel toggle, Open in main window and More. The row is the
+ * one that moves the window. Under its divider, at the top left of the chat,
+ * the kind line names the paper or the library.
  */
 #llmforzotero-standalone-chat-root[data-window-role="follower"]
   .llm-standalone-tab-row {
   display: flex;
   justify-content: space-between;
-  height: 52px;
-  min-height: 52px;
+  box-shadow: inset 0 -1px var(--stroke-secondary);
 }
 
 #llmforzotero-standalone-chat-root[data-window-role="follower"]
@@ -4715,15 +4715,6 @@
   flex: 0 0 auto;
 }
 
-.llm-follower-heading {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 1px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
 .llm-follower-title-line,
 .llm-follower-kind-line {
   display: flex;
@@ -4732,13 +4723,17 @@
   min-width: 0;
 }
 
-/* The title and kind line are part of the row that moves the window, so they
- * are not text to select. */
+.llm-follower-title-line {
+  flex: 1 1 auto;
+}
+
+/* The title is part of the row that moves the window, and the kind line is
+ * a label, so neither is text to select. */
 #llmforzotero-standalone-chat-root[data-window-role="follower"]
   .llm-follower-title {
   min-width: 0;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: calc(15px * var(--llm-font-scale));
+  line-height: calc(20px * var(--llm-font-scale));
   font-weight: 600;
   color: var(--fill-primary);
   white-space: nowrap;
@@ -4750,8 +4745,11 @@
 }
 
 .llm-follower-kind-line {
-  font-size: 12px;
-  line-height: 16px;
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 8px 16px 0;
+  font-size: var(--llm-fs-12);
+  line-height: calc(16px * var(--llm-font-scale));
   color: var(--fill-secondary);
   -moz-user-select: none;
   user-select: none;
