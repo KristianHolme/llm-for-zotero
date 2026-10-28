@@ -1872,6 +1872,20 @@
   padding-top: 12vh;
 }
 
+/* Opened from a follower's History button: a dropdown right under the
+ * button (the controller sets the top and left padding), with no dimming. */
+.llm-standalone-search-overlay.llm-standalone-search-overlay-anchored {
+  justify-content: flex-start;
+  padding-right: 8px;
+  padding-bottom: 8px;
+  background: transparent;
+}
+
+.llm-standalone-search-overlay-anchored .llm-standalone-search-popup {
+  width: min(100%, 480px);
+  max-height: min(60vh, 100%);
+}
+
 .llm-standalone-search-overlay.llm-history-search-theme-light,
 .llm-standalone-search-embedded.llm-history-search-theme-light {
   --llm-history-paper-chip-text: #1d4ed8;
@@ -3910,6 +3924,9 @@
 }
 
 .llm-standalone-tab-row .llm-standalone-side-panel-toggle,
+.llm-standalone-tab-row .llm-follower-open-main,
+.llm-standalone-tab-row .llm-follower-history,
+.llm-standalone-tab-row .llm-follower-more,
 .llm-standalone-side-panel-bar .llm-standalone-title-action {
   width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
   min-width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
@@ -4649,6 +4666,210 @@
   -moz-user-select: text;
   user-select: text;
   cursor: text;
+}
+
+/* Marks a torn-off window that does not follow the PDF reader (lucide
+   "unlink"); drawn as a mask so it takes the muted text color. */
+.llm-standalone-unlinked-icon {
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  margin-right: -6px;
+  color: var(--fill-secondary);
+  background-color: currentColor;
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71'/><path d='m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71'/><line x1='8' x2='8' y1='2' y2='5'/><line x1='2' x2='5' y1='8' y2='8'/><line x1='16' x2='16' y1='19' y2='22'/><line x1='19' x2='22' y1='16' y2='16'/></svg>");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71'/><path d='m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71'/><line x1='8' x2='8' y1='2' y2='5'/><line x1='2' x2='5' y1='8' y2='8'/><line x1='16' x2='16' y1='19' y2='22'/><line x1='19' x2='22' y1='16' y2='16'/></svg>");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-standalone-unlinked-icon[hidden] {
+  display: none;
+}
+
+/* --- Follower window: one chat under one compact row ---------------------
+ * Left: window buttons, the unlinked icon and the chat's title. Right:
+ * History, side panel toggle, Open in main window and More. The row is the
+ * one that moves the window. Under its divider, at the top left of the chat,
+ * the kind line names the paper or the library.
+ */
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row {
+  display: flex;
+  justify-content: space-between;
+  box-shadow: inset 0 -1px var(--stroke-secondary);
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row-leading {
+  flex: 1 1 auto;
+  gap: 6px;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-tab-row-trailing {
+  flex: 0 0 auto;
+}
+
+.llm-follower-title-line,
+.llm-follower-kind-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.llm-follower-title-line {
+  flex: 1 1 auto;
+}
+
+/* The title is part of the row that moves the window, and the kind line is
+ * a label, so neither is text to select. */
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-follower-title {
+  min-width: 0;
+  font-size: var(--llm-standalone-ui-font-size);
+  line-height: var(--llm-standalone-ui-line-height);
+  font-weight: 400;
+  color: var(--fill-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -moz-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.llm-follower-kind-line {
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 8px 16px 0;
+  font-size: var(--llm-fs-12);
+  line-height: calc(16px * var(--llm-font-scale));
+  color: var(--fill-secondary);
+  -moz-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.llm-follower-kind-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-follower-kind-icon {
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+#llmforzotero-standalone-chat-root[data-window-role="follower"]
+  .llm-standalone-unlinked-icon {
+  margin-right: 0;
+}
+
+/* The More menu reuses the chat row menu's look; this only places it and
+ * marks Task progress while it shows. */
+.llm-follower-more-menu [aria-checked="true"]::after {
+  content: "\2713";
+  float: right;
+  margin-left: 12px;
+}
+
+.llm-follower-more-menu [disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.llm-follower-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--stroke-secondary);
+}
+
+/* The picture under the pointer while a chat is torn off: a small window
+ * with the unlinked icon and the title, as the follower opens. A drag image
+ * must be laid out, so it waits off-screen rather than hidden. */
+.llm-tear-off-drag-image {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 220px;
+  height: 72px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--material-sidepane);
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.llm-tear-off-drag-image-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  font-size: var(--llm-standalone-ui-font-size);
+  line-height: var(--llm-standalone-ui-line-height);
+  font-weight: 500;
+  color: var(--fill-primary);
+  box-shadow: inset 0 -1px var(--stroke-secondary);
+}
+
+.llm-tear-off-drag-image .llm-standalone-unlinked-icon {
+  margin-right: 0;
+}
+
+.llm-tear-off-drag-image-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-follower-history::before {
+  mask-image: url("icons/action-history-clock.svg");
+  -webkit-mask-image: url("icons/action-history-clock.svg");
+}
+
+/* lucide "arrow-down-left": back into the main window. */
+.llm-follower-open-main::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 7 7 17'/%3E%3Cpath d='M17 17H7V7'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 7 7 17'/%3E%3Cpath d='M17 17H7V7'/%3E%3C/svg%3E");
+}
+
+/* lucide "ellipsis": the More menu. */
+.llm-follower-more::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 12h.01M19 12h.01M5 12h.01'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 12h.01M19 12h.01M5 12h.01'/%3E%3C/svg%3E");
+}
+
+/* The kind line: lucide "file-text" for a paper chat, "library" for a
+ * library chat. */
+.llm-follower-kind-icon[data-kind="paper"] {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/%3E%3Cpath d='M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8'/%3E%3C/svg%3E");
+}
+
+.llm-follower-kind-icon[data-kind="library"] {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m16 6 4 14M12 6v14M8 8v12M4 4v16'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m16 6 4 14M12 6v14M8 8v12M4 4v16'/%3E%3C/svg%3E");
 }
 
 .llm-standalone-content-title-actions {
@@ -17914,6 +18135,13 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   -moz-window-dragging: no-drag;
 }
 
+/* The chat title and chat rows tear a chat off into its own window when
+ * dragged; macOS must never take them as a window-move region. */
+:root[customtitlebar] .llm-standalone-content-title-text[draggable="true"],
+:root[customtitlebar] .llm-standalone-conv-item[draggable="true"] {
+  -moz-window-dragging: no-drag;
+}
+
 /* The side panel's bar drags the window like the tab row beside it, the
  * gaps around the tabs included; the tabs, its buttons and the toggle stay
  * clickable. */
@@ -17923,6 +18151,9 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
 }
 
 :root[customtitlebar] .llm-standalone-side-panel-toggle,
+:root[customtitlebar] .llm-follower-open-main,
+:root[customtitlebar] .llm-follower-history,
+:root[customtitlebar] .llm-follower-more,
 :root[customtitlebar] .llm-standalone-side-panel-tab,
 :root[customtitlebar] .llm-standalone-side-panel-bar button {
   -moz-window-dragging: no-drag;

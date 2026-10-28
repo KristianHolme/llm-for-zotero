@@ -7,11 +7,20 @@ import type { RetrievalTimingReport } from "../../services/retrieval/retrievalTi
 import type { LibraryTextIndexStatus } from "../../services/libraryTextIndex/scheduler";
 import type { LibraryRetrieveResult } from "../../agent/services/libraryRetrieveService";
 import type { CodexAppServerModelCatalogEntry } from "../../codexAppServer/modelCatalog";
+import type { TornChatIdentity } from "./tornChatWindows";
 
 export type WorkflowTestCodexModelCatalogResponse = {
   models?: CodexAppServerModelCatalogEntry[];
   error?: string;
   delayed?: boolean;
+};
+
+/** One open chat window document: the standalone window or a torn-off one. */
+export type WorkflowTestChatWindowEntry = {
+  /** The window's openDialog name. */
+  name: string;
+  /** Declares windowtype "llmforzotero:chat" (a torn-off window). */
+  torn: boolean;
 };
 
 export type WorkflowTestFixture = {
@@ -1521,6 +1530,20 @@ export type WorkflowTestApi = {
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   getStandaloneDiagnostics: () => Promise<WorkflowTestStandaloneDiagnostics>;
   closeStandalone: () => Promise<void>;
+  /** Starts opening (or focuses) the standalone window without waiting. */
+  beginOpenStandaloneForTest: (itemId: number) => void;
+  isStandaloneWindowActiveForTest: () => boolean;
+  /**
+   * Opens a torn-off window on the chat and waits for its panel; its panel
+   * body is the window's `.llm-standalone-content`.
+   */
+  openTornChatWindowForTest: (
+    identity: TornChatIdentity,
+    placement?: { screenX: number; screenY: number },
+  ) => Promise<{ surface: string }>;
+  getTornChatWindowsForTest: () => Window[];
+  closeTornChatWindowsForTest: () => Promise<void>;
+  listChatWindowsForTest: () => WorkflowTestChatWindowEntry[];
   /** Replaces the update checker, installer and release-notes fetcher; null restores them. */
   setPluginUpdateDeps: (
     deps: import("../pluginUpdate").PluginUpdateDeps | null,

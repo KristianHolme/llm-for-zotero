@@ -4,10 +4,12 @@ import { config } from "../package.json";
 import {
   bindSurfaceChoices,
   clearStandaloneSurfaceChoices,
+  clearTornSurfaceChoices,
   demoteConversationSystemOnEverySurface,
   resetSideSurfaceChoices,
   startSideSurfaceChoicesFromStandalone,
   startStandaloneSurfaceChoicesFromSidebar,
+  startTornSurfaceChoices,
   getSelectedModelEntryForSurface,
   setSelectedModelEntryForSurface,
   surfaceChoices,
@@ -491,6 +493,172 @@ describe("surfaceChoices: each chat surface keeps its own model and backend", fu
 
       resetSideSurfaceChoices();
       assert.equal(surfaceChoices.lastUsedRuntimeMode.get("side"), "agent");
+    });
+
+    it("the side chat starts from the standalone window, never a torn window", function () {
+      prefStore.set(pref("lastUsedRuntimeMode"), "agent");
+      startTornSurfaceChoices("torn:1");
+      setSelectedModelEntryForSurface("entry-b", "torn:1");
+      surfaceChoices.lastUsedRuntimeMode.set("chat", "torn:1");
+      startSideSurfaceChoicesFromStandalone();
+      assert.equal(getSelectedModelEntryForSurface("side")?.model, "model-a");
+      assert.equal(surfaceChoices.lastUsedRuntimeMode.get("side"), "agent");
+
+      resetSideSurfaceChoices();
+      assert.equal(getSelectedModelEntryForSurface("torn:1")?.model, "model-b");
+      assert.equal(surfaceChoices.lastUsedRuntimeMode.get("torn:1"), "chat");
+      clearTornSurfaceChoices("torn:1");
+    });
+  });
+
+  describe("torn window surfaces", function () {
+    beforeEach(function () {
+      clearTornSurfaceChoices("torn:1");
+      clearTornSurfaceChoices("torn:2");
+      setModelProviderGroups([
+        {
+          id: "group-a",
+          authMode: "api_key",
+          apiBase: "https://surface-choices.invalid/v1",
+          apiKey: "key",
+          providerProtocol: "openai_chat_compat",
+          models: [
+            { id: "entry-a", model: "model-a" },
+            { id: "entry-b", model: "model-b" },
+          ],
+        },
+        {
+          id: "group-web",
+          authMode: "webchat",
+          apiBase: "",
+          apiKey: "",
+          providerProtocol: "web_sync",
+          models: [{ id: "entry-web", model: "chatgpt.com" }],
+        },
+      ] as any);
+    });
+
+    afterEach(function () {
+      clearTornSurfaceChoices("torn:1");
+      clearTornSurfaceChoices("torn:2");
+    });
+
+    it("a torn surface starts from the standalone window's choices and diverges", function () {
+      surfaceChoices.modelEntryId.set("entry-a", "standalone");
+      startTornSurfaceChoices("torn:1");
+      surfaceChoices.modelEntryId.set("entry-b", "torn:1");
+      assert.equal(surfaceChoices.modelEntryId.get("standalone"), "entry-a");
+      assert.equal(surfaceChoices.modelEntryId.get("torn:1"), "entry-b");
+
+      // A later window change does not move a started torn window.
+      prefStore.set(pref("conversationSystem"), "upstream");
+      surfaceChoices.conversationSystem.set("codex", "standalone");
+      assert.equal(surfaceChoices.conversationSystem.get("torn:1"), "upstream");
+      surfaceChoices.conversationSystem.set("claude_code", "torn:1");
+      assert.equal(
+        surfaceChoices.conversationSystem.get("torn:1"),
+        "claude_code",
+      );
+      assert.equal(
+        surfaceChoices.conversationSystem.get("standalone"),
+        "codex",
+      );
+      // A torn window that was never started reads the standalone window's.
+      assert.equal(surfaceChoices.conversationSystem.get("torn:2"), "codex");
+      assert.equal(prefStore.get(pref("lastUsedModelEntryId")), "entry-a");
+      assert.equal(prefStore.get(pref("conversationSystem")), "upstream");
+    });
+
+    it("a torn surface copies keyed choices and reads unset for keys the window lacked", function () {
+      surfaceChoices.lastUsedReasoningLevelForProvider.set(
+        "openai",
+        "high",
+        "standalone",
+      );
+      startTornSurfaceChoices("torn:1");
+      surfaceChoices.lastUsedReasoningLevelForProvider.set(
+        "anthropic",
+        "low",
+        "standalone",
+      );
+      assert.equal(
+        surfaceChoices.lastUsedReasoningLevelForProvider.get(
+          "openai",
+          "torn:1",
+        ),
+        "high",
+      );
+      assert.isNull(
+        surfaceChoices.lastUsedReasoningLevelForProvider.get(
+          "anthropic",
+          "torn:1",
+        ),
+      );
+      surfaceChoices.lastUsedReasoningLevelForProvider.set(
+        "openai",
+        "low",
+        "torn:1",
+      );
+      assert.equal(
+        surfaceChoices.lastUsedReasoningLevelForProvider.get(
+          "openai",
+          "standalone",
+        ),
+        "high",
+      );
+    });
+
+    it("a torn surface never resolves to a WebChat model entry", function () {
+      setSelectedModelEntryForSurface("entry-web", "standalone");
+      startTornSurfaceChoices("torn:1");
+      assert.notEqual(
+        getSelectedModelEntryForSurface("torn:1")?.authMode,
+        "webchat",
+      );
+
+      setSelectedModelEntryForSurface("entry-web", "torn:1");
+      assert.notEqual(
+        getSelectedModelEntryForSurface("torn:1")?.authMode,
+        "webchat",
+      );
+      // A torn window that was never started does not inherit it either.
+      assert.notEqual(
+        getSelectedModelEntryForSurface("torn:2")?.authMode,
+        "webchat",
+      );
+      assert.equal(
+        getSelectedModelEntryForSurface("standalone")?.authMode,
+        "webchat",
+      );
+    });
+
+    it("startStandaloneSurfaceChoicesFromSidebar does not reset torn stores", function () {
+      startTornSurfaceChoices("torn:1");
+      setSelectedModelEntryForSurface("entry-b", "torn:1");
+      startStandaloneSurfaceChoicesFromSidebar();
+      clearStandaloneSurfaceChoices();
+      assert.equal(getSelectedModelEntryForSurface("torn:1")?.model, "model-b");
+      assert.equal(
+        getSelectedModelEntryForSurface("standalone")?.model,
+        "model-a",
+      );
+    });
+
+    it("a disabled runtime is demoted on torn windows too", function () {
+      startTornSurfaceChoices("torn:1");
+      surfaceChoices.conversationSystem.set("codex", "torn:1");
+      demoteConversationSystemOnEverySurface("codex");
+      assert.equal(surfaceChoices.conversationSystem.get("torn:1"), "upstream");
+    });
+
+    it("clearTornSurfaceChoices forgets one torn window's choices", function () {
+      startTornSurfaceChoices("torn:1");
+      startTornSurfaceChoices("torn:2");
+      setSelectedModelEntryForSurface("entry-b", "torn:1");
+      setSelectedModelEntryForSurface("entry-b", "torn:2");
+      clearTornSurfaceChoices("torn:1");
+      assert.equal(getSelectedModelEntryForSurface("torn:1")?.model, "model-a");
+      assert.equal(getSelectedModelEntryForSurface("torn:2")?.model, "model-b");
     });
   });
 });

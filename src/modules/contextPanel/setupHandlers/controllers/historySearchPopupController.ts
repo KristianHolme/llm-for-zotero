@@ -27,10 +27,18 @@ export const HISTORY_SEARCH_POPUP_THEME_DARK_CLASS =
 export const HISTORY_SEARCH_POPUP_THEME_LIGHT_CLASS =
   "llm-history-search-theme-light";
 
+/**
+ * Where the popup opens: centered over its parent by default, or right
+ * under `anchor` (a follower window's History button), left-aligned with it.
+ */
+export type HistorySearchPopupOpenOptions = {
+  anchor?: HTMLElement | null;
+};
+
 export type HistorySearchPopupController = {
-  open: () => void;
+  open: (options?: HistorySearchPopupOpenOptions) => void;
   close: () => void;
-  toggle: () => void;
+  toggle: (options?: HistorySearchPopupOpenOptions) => void;
   isOpen: () => boolean;
   destroy: () => void;
 };
@@ -901,8 +909,22 @@ export function createHistorySearchPopupController(
         }),
   });
 
+  const placePopup = (anchor: HTMLElement | null | undefined) => {
+    if (!anchor) {
+      overlay.classList.remove("llm-standalone-search-overlay-anchored");
+      overlay.style.removeProperty("padding-top");
+      overlay.style.removeProperty("padding-left");
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    overlay.classList.add("llm-standalone-search-overlay-anchored");
+    overlay.style.paddingTop = `${Math.round(rect.bottom + 4)}px`;
+    overlay.style.paddingLeft = `${Math.max(8, Math.round(rect.left))}px`;
+  };
+
   const controller: HistorySearchPopupController = {
-    open: () => {
+    open: (options) => {
+      placePopup(options?.anchor);
       overlay.style.display = "flex";
       syncThemeClass();
       listView.clear();
@@ -913,11 +935,11 @@ export function createHistorySearchPopupController(
       overlay.style.display = "none";
       listView.clear();
     },
-    toggle: () => {
+    toggle: (options) => {
       if (controller.isOpen()) {
         controller.close();
       } else {
-        controller.open();
+        controller.open(options);
       }
     },
     isOpen: () => overlay.style.display !== "none",

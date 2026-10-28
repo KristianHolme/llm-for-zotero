@@ -204,6 +204,7 @@ const zhCN: Record<string, string> = {
   "Ask a quick side question. Not saved.": "快速提一个旁支问题，不会保存。",
   "Read another past chat, read-only": "以只读方式查看另一个过往对话",
   "Ask on the side, or read a past chat": "在侧边提问，或查看过往对话",
+  "Read a past chat": "查看过往对话",
   History: "历史记录",
   "Read-only": "只读",
   "Quote in main chat": "在主对话中引用",
@@ -1737,6 +1738,10 @@ const zhCN: Record<string, string> = {
   "Close HTML preview viewer": "关闭 HTML 预览查看器",
   "Preview stopped: the page tried to leave.":
     "预览已停止：该页面试图跳转离开。",
+  "Not linked to the PDF reader. Switching PDF tabs does not change this chat.":
+    "未与 PDF 阅读器关联。切换 PDF 标签页不会改变此对话。",
+  "Open in New Window": "在新窗口中打开",
+  "Open in main window": "在主窗口中打开",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────

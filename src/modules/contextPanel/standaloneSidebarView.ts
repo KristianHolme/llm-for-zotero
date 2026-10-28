@@ -23,6 +23,11 @@ export type StandaloneSidebarView = {
    * not rendered. Null keeps both in the header.
    */
   collapsedChromeHost: HTMLElement | null;
+  /**
+   * A follower window's top row: it holds the window controls for good, and
+   * the collapse toggle is never shown. Null for the standalone window.
+   */
+  followerChromeHost: HTMLElement | null;
   newChatButton: HTMLButtonElement;
   newChatLabel: HTMLSpanElement;
   searchButton: HTMLButtonElement;
@@ -344,6 +349,7 @@ export function createStandaloneSidebarView(
     windowButtons,
     toggleButton,
     collapsedChromeHost: null,
+    followerChromeHost: null,
     newChatButton: newChat.button,
     newChatLabel: newChat.label,
     searchButton: search.button,
@@ -403,6 +409,18 @@ export function setStandaloneSidebarCollapsedChromeHost(
   placeWindowChrome(view, view.root.dataset.sidebarState !== "collapsed");
 }
 
+/**
+ * A follower window has no sidebar: its window controls move into `host`
+ * (its top row) and stay there whatever state the rail is in.
+ */
+export function setStandaloneFollowerChromeHost(
+  view: StandaloneSidebarView,
+  host: HTMLElement,
+): void {
+  view.followerChromeHost = host;
+  placeWindowChrome(view, view.root.dataset.sidebarState !== "collapsed");
+}
+
 /** Hover reveal of the collapsed sidebar, independent of the pinned state. */
 export function setStandaloneSidebarFlyoutOpen(
   view: StandaloneSidebarView,
@@ -419,6 +437,10 @@ function placeWindowChrome(
   view: StandaloneSidebarView,
   expanded: boolean,
 ): void {
+  if (view.followerChromeHost) {
+    view.followerChromeHost.prepend(view.windowButtons);
+    return;
+  }
   const host = !expanded && view.collapsedChromeHost;
   if (!host) {
     view.header.append(view.windowButtons, view.toggleButton);

@@ -39,6 +39,7 @@ import { createNoteConversationItem } from "../../services/notes/conversationIte
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
 import { observeHistoryActivity } from "./historyActivity";
+import { isLivePanelBody } from "./panelLiveness";
 import { revealLocalPath } from "../../utils/revealLocalPath";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
@@ -190,6 +191,7 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import {
+  isTornSurface,
   recall,
   recallActive,
   remember,
@@ -765,6 +767,11 @@ export function setupHandlers(
   // The window's temporary side chat (markSidePanelBody): API runtime only,
   // never saved, and never a Zotero "Add as context" target.
   const isSidePanel = isSidePanelBody(body);
+  // WebChat drives one browser session that only the sidebar and the
+  // standalone window use: a side chat is never saved, and a torn-off window
+  // never takes the session from the standalone window.
+  const offersWebChatModels = () =>
+    !isSidePanel && !isTornSurface(selectionSurface());
   // The model and backend this panel's surface has chosen (surfaceChoices.ts):
   // the sidebar's are the saved prefs; the window's live in memory.
   const panelChoices = bindSurfaceChoices(selectionSurface);
@@ -776,10 +783,17 @@ export function setupHandlers(
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
   if (__env__ !== "production" && !getPanelHostBinding(body)) {
+    // A body declares its own surface (a torn window's "torn:<id>"); the
+    // standalone window's is the default.
+    const declaredSurface = selectionSurface();
     if (isSidePanel) {
       bindSidePanelHost(body, rawPanelItem);
     } else if (existingPanelRoot?.dataset.standalone === "true") {
-      bindStandalonePanelHost(body, rawPanelItem);
+      bindStandalonePanelHost(
+        body,
+        rawPanelItem,
+        isTornSurface(declaredSurface) ? declaredSurface : "standalone",
+      );
     } else {
       bindTestPanelHost(body, rawPanelItem);
     }
@@ -1408,6 +1422,7 @@ export function setupHandlers(
       claudeEnabled: isClaudeModeAvailable(),
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
+      isTornWindow: isTornSurface(selectionSurface()),
     });
   };
   const updateRuntimeModeButtonState = () => {
@@ -2230,6 +2245,12 @@ export function setupHandlers(
     const isPanelUnavailable = () =>
       !(body as Element).isConnected ||
       body.ownerDocument?.defaultView?.closed === true;
+    // A follower window's panel stays on its chat when that chat's runtime
+    // is turned off: the window closes (standaloneWindow.ts).
+    const leaveTurnedOffRuntime = () => {
+      if (isTornSurface(selectionSurface())) return;
+      void switchConversationSystem("upstream");
+    };
     const onAgentPrefChange = () => {
       if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
@@ -2254,7 +2275,7 @@ export function setupHandlers(
           });
         demoteConversationSystemOnEverySurface("claude_code");
         if (isClaudeConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
@@ -2268,7 +2289,7 @@ export function setupHandlers(
       if (!isCodexAppServerModeEnabled()) {
         demoteConversationSystemOnEverySurface("codex");
         if (isCodexConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
@@ -3186,6 +3207,18 @@ export function setupHandlers(
     }
     const activeReaderAttachment = getActiveContextAttachmentFromTabs();
     if (activeReaderAttachment) {
+      const ownerPaperId = sourceItem?.isAttachment?.()
+        ? sourceItem.parentID
+        : sourceItem?.id;
+      if (
+        sourceItem &&
+        ownerPaperId &&
+        activeReaderAttachment.id !== sourceItem.id &&
+        activeReaderAttachment.parentID !== ownerPaperId
+      ) {
+        // The reader shows another paper; resolve the panel's own paper.
+        return resolveContextSourceItem(sourceItem);
+      }
       return resolveContextSourceItem(activeReaderAttachment);
     }
     return null;
@@ -5639,8 +5672,8 @@ export function setupHandlers(
       : isCodexConversationSystem()
         ? getCodexRuntimeModelEntries()
         : getAvailableModelEntries().filter(
-            // A side chat is never saved, so it never runs on WebChat.
-            (entry) => !isSidePanel || entry.authMode !== "webchat",
+            // Neither a side chat nor a torn-off window runs on WebChat.
+            (entry) => offersWebChatModels() || entry.authMode !== "webchat",
           );
     const groupedChoices: Array<{
       providerLabel: string;
@@ -9097,35 +9130,39 @@ export function setupHandlers(
     if (result.changed) flushPanelStateRefreshNow();
   };
 
-  // The side chat never captures Zotero's "Add as context": that action
-  // always goes to the window's main chat (or a sidebar panel).
-  const unregisterContextSurfaceActions = isSidePanel
-    ? () => undefined
-    : registerContextSurfaceActionTarget(body, {
-        surfaceKind: isStandalonePanel ? "standalone" : "embedded",
-        addItemsAsDefaultContext: addItemsAsDefaultContextForPanel,
-        afterItemsAsDefaultContextAdded: (result) => {
-          if (!isStandalonePanel || !result.changed) return;
-          flushPanelStateRefreshNow();
-          hooks?.onDefaultContextRendered?.();
-        },
-        prepareItemsAsDefaultContextTarget: isStandalonePanel
-          ? hooks?.prepareItemsAsDefaultContextTarget
-          : async () => {
-              if (isNoteSession() || isWebChatMode()) return false;
-              const lease = capturePanelOperationLease(body);
-              const libraryID = getCurrentLibraryID();
-              if (!lease || !libraryID) return false;
-              const summary = await conversationRepository.createCatalogEntry({
-                system: getConversationSystem(),
-                kind: "global",
-                libraryID,
-              });
-              if (!summary || !isPanelOperationLeaseCurrent(lease))
-                return false;
-              return switchGlobalConversation(summary.conversationKey);
-            },
-      });
+  // The side chat and a torn-off window never capture Zotero's "Add as
+  // context": that action always goes to the one standalone window (or a
+  // sidebar panel).
+  const unregisterContextSurfaceActions =
+    isSidePanel || isTornSurface(selectionSurface())
+      ? () => undefined
+      : registerContextSurfaceActionTarget(body, {
+          surfaceKind: isStandalonePanel ? "standalone" : "embedded",
+          addItemsAsDefaultContext: addItemsAsDefaultContextForPanel,
+          afterItemsAsDefaultContextAdded: (result) => {
+            if (!isStandalonePanel || !result.changed) return;
+            flushPanelStateRefreshNow();
+            hooks?.onDefaultContextRendered?.();
+          },
+          prepareItemsAsDefaultContextTarget: isStandalonePanel
+            ? hooks?.prepareItemsAsDefaultContextTarget
+            : async () => {
+                if (isNoteSession() || isWebChatMode()) return false;
+                const lease = capturePanelOperationLease(body);
+                const libraryID = getCurrentLibraryID();
+                if (!lease || !libraryID) return false;
+                const summary = await conversationRepository.createCatalogEntry(
+                  {
+                    system: getConversationSystem(),
+                    kind: "global",
+                    libraryID,
+                  },
+                );
+                if (!summary || !isPanelOperationLeaseCurrent(lease))
+                  return false;
+                return switchGlobalConversation(summary.conversationKey);
+              },
+        });
 
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
@@ -9286,8 +9323,9 @@ export function setupHandlers(
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);
     // Rebuilding the root of a still-mounted body must retain its raw paper
-    // identity. A detached body, however, owns no surviving UI registration.
-    if (!body.isConnected) {
+    // identity. A detached body, or one whose window closed, owns no
+    // surviving UI registration.
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       releaseInlineEdit(body);
     }

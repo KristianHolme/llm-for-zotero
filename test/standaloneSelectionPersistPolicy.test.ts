@@ -31,23 +31,37 @@ describe("conversation selection persist policy", function () {
     "src/modules/contextPanel/setupHandlers/controllers/historyLifecycleController.ts",
   );
 
-  it("standalone global helper writes the window's own slot and never a pref", function () {
+  // Each chat window (the standalone window, or a torn-off window) writes
+  // its own window surface: "standalone" or its "torn:<id>".
+  it("each chat window has its own window surface", function () {
+    const open = functionBody(standalone, "openStandaloneChat");
+    assert.include(open, 'windowSurface: "standalone",');
+    const torn = functionBody(standalone, "openTornChatWindow");
+    assert.include(torn, "const surface = allocateTornSurface();");
+    assert.include(torn, "windowSurface: surface,");
+    assert.include(standalone, "  windowSurface: WindowSurface;\n");
+  });
+
+  it("the window global helper writes the window's own slot and never a pref", function () {
     const body = functionBody(
       standalone,
       "rememberStandaloneGlobalConversation",
     );
-    assert.include(body, 'kind: "global"');
-    assert.include(body, 'surface: "standalone"');
+    assert.include(body, "surface: WindowSurface");
+    assert.include(body, '{ system, libraryID, kind: "global", surface }');
     assert.notInclude(body, "persist");
   });
 
-  it("standalone paper helper writes the window's own slot and never a pref", function () {
+  it("the window paper helper writes the window's own slot and never a pref", function () {
     const body = functionBody(
       standalone,
       "rememberStandalonePaperConversation",
     );
-    assert.include(body, 'kind: "paper"');
-    assert.include(body, 'surface: "standalone"');
+    assert.include(body, "surface: WindowSurface");
+    assert.include(
+      body,
+      '{ system, libraryID, kind: "paper", paperItemID, surface }',
+    );
     assert.notInclude(body, "persist");
   });
 
@@ -55,7 +69,7 @@ describe("conversation selection persist policy", function () {
     const start = standalone.indexOf("const commitStandaloneMode = ");
     assert.isAtLeast(start, 0, "commitStandaloneMode must exist");
     const body = standalone.slice(start, standalone.indexOf("};", start));
-    assert.include(body, 'surface: "standalone"');
+    assert.include(body, "surface: windowSurface");
     assert.notInclude(body, "active: false");
   });
 
@@ -65,7 +79,7 @@ describe("conversation selection persist policy", function () {
     for (const call of primes) {
       assert.include(
         call.slice(0, call.indexOf("});")),
-        'surface: "standalone"',
+        "surface: windowSurface",
       );
     }
   });
@@ -110,14 +124,14 @@ describe("conversation selection persist policy", function () {
     assert.include(guarded, "setLockedGlobalConversationKey(libraryID, null)");
   });
 
-  it("a side chat never captures Zotero's Add as context", function () {
+  it("a side chat and a torn-off window never capture Zotero's Add as context", function () {
     assert.include(
       setupHandlers,
-      "const unregisterContextSurfaceActions = isSidePanel\n    ? () => undefined\n    : registerContextSurfaceActionTarget(body, {",
+      "const unregisterContextSurfaceActions =\n    isSidePanel || isTornSurface(selectionSurface())\n      ? () => undefined\n      : registerContextSurfaceActionTarget(body, {",
     );
   });
 
-  it("a side chat offers no Claude Code, Codex, or WebChat runtime", function () {
+  it("a side chat offers no Claude Code, Codex, or WebChat runtime; a torn-off window no WebChat", function () {
     assert.include(
       setupHandlers,
       "const isClaudeModeAvailable = () =>\n    !isSidePanel && getClaudeCodeModeEnabled();",
@@ -128,7 +142,11 @@ describe("conversation selection persist policy", function () {
     );
     assert.include(
       setupHandlers,
-      '(entry) => !isSidePanel || entry.authMode !== "webchat",',
+      "const offersWebChatModels = () =>\n    !isSidePanel && !isTornSurface(selectionSurface());",
+    );
+    assert.include(
+      setupHandlers,
+      '(entry) => offersWebChatModels() || entry.authMode !== "webchat",',
     );
   });
 

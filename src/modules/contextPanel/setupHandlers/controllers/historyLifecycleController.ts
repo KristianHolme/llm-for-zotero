@@ -101,7 +101,12 @@ import {
   getLockedGlobalConversationKey,
   setLockedGlobalConversationKey,
 } from "../../prefHelpers";
-import { recall, recallActive, remember } from "../../conversationSelection";
+import {
+  isTornSurface,
+  recall,
+  recallActive,
+  remember,
+} from "../../conversationSelection";
 import type { AgentRuntime } from "../../../../agent/runtime";
 import { clearActiveConversationForPendingDeletion } from "../../conversationDeletionActivation";
 import {
@@ -4030,6 +4035,9 @@ export function createHistoryLifecycleController(
       surface: await getConversationDeletionSurfaceSnapshot(),
       surrendered: surrendered.has(entry.id),
       dropped,
+      // A follower window holds one chat: the panel never leaves it, and the
+      // window closes when the deletion is final (standaloneWindow.ts).
+      holdsOneChat: isTornSurface(selectionSurface()),
     });
     if (action.type === "leave") {
       const left = await leaveConversationForPendingDeletion(entry);

@@ -109,6 +109,7 @@ import type {
   WorkflowTestRuntimeSystemToggle,
   WorkflowTestStandaloneComposerResizeDiagnostics,
   WorkflowTestStandaloneDiagnostics,
+  WorkflowTestChatWindowEntry,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestTargetedQuoteRefreshResult,
   WorkflowTestChatTurnLifecycleState,
@@ -205,9 +206,16 @@ import { setPluginUpdateDepsForTest } from "../pluginUpdateAdapters";
 import { openStandalonePlanDocumentWindow } from "./standalonePlanDocumentWindow";
 import { renderPlanDocumentContent } from "./planDocumentPresentation";
 import {
+  isStandaloneWindowActive,
   notifyStandaloneItemChanged as notifyStandaloneItemChangedRuntime,
   openStandaloneChat,
+  openTornChatWindow,
 } from "./standaloneWindow";
+import {
+  closeAllTornChatWindows,
+  getTornChatWindows,
+  type TornChatIdentity,
+} from "./tornChatWindows";
 import {
   getWorkflowTestSendSettledSequence,
   getWorkflowTestSendInterceptor,
@@ -4617,6 +4625,92 @@ async function closeStandalone(): Promise<void> {
   }
 }
 
+/** Starts opening (or focuses) the standalone window without waiting. */
+function beginOpenStandaloneForTest(itemId: number): void {
+  assertWorkflowTestEnabled();
+  const item = Zotero.Items.get(itemId) || null;
+  openStandaloneChat({ initialItem: item });
+}
+
+function isStandaloneWindowActiveForTest(): boolean {
+  assertWorkflowTestEnabled();
+  return isStandaloneWindowActive();
+}
+
+// ---------------------------------------------------------------------------
+// Torn-off chat windows
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a torn-off window on the chat and waits until its panel shows the
+ * conversation, as openStandaloneForItem does for the standalone window.
+ */
+async function openTornChatWindowForTest(
+  identity: TornChatIdentity,
+  placement?: { screenX: number; screenY: number },
+): Promise<{ surface: string }> {
+  assertWorkflowTestEnabled();
+  const win = openTornChatWindow(identity, placement);
+  if (!win) throw new Error("The torn-off chat window did not open");
+  const startedAt = Date.now();
+  let contentArea: HTMLElement | null = null;
+  let item: Zotero.Item | null = null;
+  while (Date.now() - startedAt < 7000) {
+    contentArea =
+      (win.document?.querySelector(
+        ".llm-standalone-content",
+      ) as HTMLElement | null) || null;
+    const panelRoot = contentArea?.querySelector(
+      "#llm-main",
+    ) as HTMLElement | null;
+    item = contentArea
+      ? activeContextPanels.get(contentArea)?.() || null
+      : null;
+    if (panelRoot?.dataset.handlersInitialized && item) break;
+    await Zotero.Promise.delay(25);
+  }
+  if (!contentArea || !item) {
+    throw new Error("Timed out waiting for the torn-off chat window");
+  }
+  await ensureConversationLoaded(item);
+  item = activeContextPanels.get(contentArea)?.() || item;
+  refreshChat(contentArea, item);
+  return { surface: contentArea.dataset.selectionSurface || "" };
+}
+
+function getTornChatWindowsForTest(): Window[] {
+  assertWorkflowTestEnabled();
+  return getTornChatWindows();
+}
+
+async function closeTornChatWindowsForTest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  closeAllTornChatWindows();
+  const startedAt = Date.now();
+  while (getTornChatWindows().length && Date.now() - startedAt < 3000) {
+    await Zotero.Promise.delay(25);
+  }
+}
+
+/** Every open chat window document (standalone or torn-off). */
+function listChatWindowsForTest(): WorkflowTestChatWindowEntry[] {
+  assertWorkflowTestEnabled();
+  const entries: WorkflowTestChatWindowEntry[] = [];
+  const enumerator = (Services as any).wm.getEnumerator(null);
+  while (enumerator.hasMoreElements()) {
+    const win = enumerator.getNext() as Window;
+    if (win.closed) continue;
+    const doc = win.document;
+    if (!doc?.getElementById("llmforzotero-standalone-chat-root")) continue;
+    entries.push({
+      name: win.name || "",
+      torn:
+        doc.documentElement?.getAttribute("windowtype") === "llmforzotero:chat",
+    });
+  }
+  return entries;
+}
+
 // ---------------------------------------------------------------------------
 // Standalone side panel (History / Side chat column)
 // ---------------------------------------------------------------------------
@@ -7657,6 +7751,7 @@ async function reset(): Promise<void> {
   heldConversationWriteLocks.clear();
   setFooterPermissionCatalogLoadersForTests();
   setAgentRunTraceLoaderForTests();
+  await closeTornChatWindowsForTest();
   await closeStandalone();
   lastSend = null;
   lastFinalRequest = null;
@@ -9788,6 +9883,12 @@ export function installWorkflowTestHarness(targetAddon: {
     getConversationHistoryTexts,
     getStandaloneDiagnostics,
     closeStandalone,
+    beginOpenStandaloneForTest,
+    isStandaloneWindowActiveForTest,
+    openTornChatWindowForTest,
+    getTornChatWindowsForTest,
+    closeTornChatWindowsForTest,
+    listChatWindowsForTest,
     setPluginUpdateDeps: setPluginUpdateDepsForTest,
     getStandaloneSidePanelDiagnostics,
     clickStandaloneSidePanelControl,
