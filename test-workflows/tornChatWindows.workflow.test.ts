@@ -225,6 +225,40 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       ".llm-follower-title",
     ) as HTMLElement | null) || null;
 
+  const kindLineOf = (win: Window | null): HTMLElement | null =>
+    (win?.document.querySelector(".llm-follower-kind-line") as HTMLElement) ||
+    null;
+
+  const kindTextOf = (win: Window | null): string =>
+    textOf(
+      win?.document.querySelector(".llm-follower-kind-text") as HTMLElement,
+    );
+
+  const moreMenuOf = (win: Window): HTMLElement | null =>
+    win.document.querySelector(".llm-follower-more-menu") as HTMLElement | null;
+
+  /** Opens the follower's More menu and returns its items by action. */
+  async function openFollowerMore(
+    win: Window,
+  ): Promise<Record<string, HTMLButtonElement>> {
+    const more = win.document.querySelector(
+      ".llm-follower-more",
+    ) as HTMLElement | null;
+    assert.isOk(more, "the follower has a More button");
+    more!.click();
+    await until(
+      () => isShown(moreMenuOf(win)),
+      () => "the More menu shows",
+    );
+    const items: Record<string, HTMLButtonElement> = {};
+    for (const item of Array.from(
+      moreMenuOf(win)!.querySelectorAll("[data-action]"),
+    ) as HTMLButtonElement[]) {
+      items[item.dataset.action!] = item;
+    }
+    return items;
+  }
+
   // The window's own all-chats popup (the chat panel has popups of its own
   // with the same classes, inside the content area).
   const WINDOW_SEARCH_OVERLAY =
@@ -896,7 +930,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   // ── W24 ──────────────────────────────────────────────────────────────────
 
-  it("W24: a follower shows one chat's controls in two rows and none of the leader's navigation", async function () {
+  it("W24: a follower shows one chat's controls in one row, with Task progress, Export and Delete in More, and none of the leader's navigation", async function () {
     // Codex on: the leader then offers runtime controls a follower must not.
     Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
     const { key, standalone } = await setupTornOnA("Torn W24");
@@ -951,13 +985,15 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       return shown[0];
     };
     const title = one(".llm-follower-title");
+    const kindLine = one(".llm-follower-kind-line");
     const icon = one(".llm-standalone-unlinked-icon");
     const sidePanel = one(".llm-standalone-side-panel-toggle");
     const openMain = one(".llm-follower-open-main");
     const history = one(".llm-follower-history");
-    const exportButton = one(".llm-standalone-icon-export");
-    const deleteButton = one(".llm-standalone-icon-clear");
+    const more = one(".llm-follower-more");
     assert.equal(openMain.title, "Open in main window");
+    assert.equal(more.title, "More actions");
+    assert.equal(more.getAttribute("aria-haspopup"), "menu");
     assert.lengthOf(
       torn.document.querySelectorAll(".llm-follower-pin"),
       0,
@@ -965,45 +1001,111 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
     assert.equal(history.title, "History");
 
-    // Top row: icon, title, then side panel and Open in main window.
-    const topRow = doc.querySelector(".llm-standalone-tab-row")!;
-    for (const node of [icon, title, sidePanel, openMain]) {
-      assert.isTrue(
-        topRow.contains(node),
-        `${node.className} is in the top row`,
-      );
+    // One row: window buttons, icon, title and kind line on the left;
+    // History, side panel, Open in main window and More on the right.
+    const row = doc.querySelector(".llm-standalone-tab-row")!;
+    for (const node of [
+      icon,
+      title,
+      kindLine,
+      history,
+      sidePanel,
+      openMain,
+      more,
+    ]) {
+      assert.isTrue(row.contains(node), `${node.className} is in the one row`);
     }
+    assert.approximately(
+      row.getBoundingClientRect().height,
+      52,
+      1,
+      "the row is about 52 px tall",
+    );
+    assert.isNull(
+      doc.querySelector(".llm-standalone-content-title"),
+      "the follower has no second header row",
+    );
     // The window buttons (macOS draws its traffic lights there) lead the
-    // top row; the sidebar toggle that goes with them in the leader does not.
+    // row; the sidebar toggle that goes with them in the leader does not.
     const windowButtons = doc.querySelector(".llm-window-buttons");
     assert.isTrue(
-      Boolean(windowButtons && topRow.contains(windowButtons)),
-      "the window buttons are in the top row",
+      Boolean(windowButtons && row.contains(windowButtons)),
+      "the window buttons are in the row",
     );
     assert.lengthOf(shownIn(torn, ".llm-standalone-nav-toggle"), 0);
     const left = (node: Element) => node.getBoundingClientRect().left;
-    assert.isBelow(left(title), left(sidePanel));
+    assert.isBelow(left(icon), left(title));
+    assert.isBelow(left(title), left(history));
+    assert.isBelow(left(history), left(sidePanel));
     assert.isBelow(left(sidePanel), left(openMain));
-    // Second row: History on the left, export and delete on the right.
-    const secondRow = doc.querySelector(".llm-standalone-content-title")!;
-    for (const node of [history, exportButton, deleteButton]) {
-      assert.isTrue(
-        secondRow.contains(node),
-        `${node.className} is in the second row`,
-      );
-    }
-    assert.isBelow(left(history), left(exportButton));
-    assert.isBelow(left(exportButton), left(deleteButton));
+    assert.isBelow(left(openMain), left(more));
+    const rowRect = row.getBoundingClientRect();
     assert.isBelow(
-      topRow.getBoundingClientRect().top,
-      secondRow.getBoundingClientRect().top,
-      "the top row is above the second row",
-    );
-    assert.isBelow(
-      secondRow.getBoundingClientRect().top,
+      rowRect.bottom,
       (doc.querySelector("#llm-input") as HTMLElement).getBoundingClientRect()
         .top,
-      "the composer is below both rows",
+      "the composer is below the row",
+    );
+    const titleRect = title.getBoundingClientRect();
+    const kindRect = kindLine.getBoundingClientRect();
+    assert.isAtLeast(
+      kindRect.top,
+      titleRect.bottom - 1,
+      "the kind line is below the title",
+    );
+    // Task progress, Export and Delete have no button outside the menu.
+    for (const selector of [
+      ".llm-standalone-icon-export",
+      ".llm-standalone-icon-clear",
+      ".llm-standalone-icon-task-progress",
+    ]) {
+      assert.lengthOf(
+        shownIn(torn, selector),
+        0,
+        `the follower shows no ${selector} outside More`,
+      );
+    }
+    // The More menu lists them, in order.
+    const items = await openFollowerMore(torn);
+    assert.deepEqual(
+      Array.from(moreMenuOf(torn)!.children).map((node) =>
+        node.getAttribute("role") === "separator"
+          ? "separator"
+          : (node as HTMLElement).dataset.action,
+      ),
+      ["task-progress", "export", "separator", "delete"],
+    );
+    assert.equal(items["task-progress"].textContent, "Task progress");
+    assert.equal(items.export.textContent, "Export");
+    assert.equal(items.delete.textContent, "Delete conversation");
+    assert.equal(more.getAttribute("aria-expanded"), "true");
+    // Escape closes the menu; a click outside does too.
+    doc.dispatchEvent(
+      new (torn as any).KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+      }),
+    );
+    assert.isFalse(isShown(moreMenuOf(torn)), "Escape closes the menu");
+    await openFollowerMore(torn);
+    doc.documentElement!.dispatchEvent(
+      new (torn as any).MouseEvent("mousedown", { bubbles: true }),
+    );
+    assert.isFalse(isShown(moreMenuOf(torn)), "a click outside closes it");
+    // Export opens its popup under More and closes the menu.
+    const again = await openFollowerMore(torn);
+    again.export.click();
+    assert.isFalse(isShown(moreMenuOf(torn)), "choosing an item closes it");
+    await until(
+      () => isShown(doc.querySelector(".llm-standalone-export-popup")),
+      () => "Export opens its popup",
+    );
+    const exportRect = doc
+      .querySelector(".llm-standalone-export-popup")!
+      .getBoundingClientRect();
+    assert.isAtLeast(exportRect.top, more.getBoundingClientRect().bottom - 1);
+    doc.documentElement!.dispatchEvent(
+      new (torn as any).MouseEvent("mousedown", { bubbles: true }),
     );
 
     // History opens the all-chats popup under its button.
@@ -1213,7 +1315,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   // ── W25 ──────────────────────────────────────────────────────────────────
 
-  it("W25: a follower's title is the paper's short label for a paper chat and the chat's title for a library chat", async function () {
+  it("W25: a follower's title is the chat's own title and its kind line names the paper or the library, and both follow a History switch", async function () {
     const a = await newPaper("Torn W25 A");
     const paper = Zotero.Items.get(a.parentItemId);
     paper.setCreators([
@@ -1227,19 +1329,10 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       paperItemId: a.parentItemId,
       userText: "Torn W25 paper question",
     });
-    await openFollower({
-      system: "upstream",
-      conversationKey: paperChat.conversationKey,
-      kind: "paper",
-      paperItemID: a.parentItemId,
-    });
-    await until(
-      () => textOf(followerTitleOf(tornWin())) === "Klaus, 2017",
-      () =>
-        `the paper chat's title is the short label: ${JSON.stringify(textOf(followerTitleOf(tornWin())))}`,
+    await Zotero.DB.queryAsync(
+      "UPDATE llm_for_zotero_paper_conversations SET title = ? WHERE conversation_key = ?",
+      ["Torn W25 paper title", paperChat.conversationKey],
     );
-
-    await api.closeTornChatWindowsForTest();
     const library = await seedChat({
       system: "upstream",
       kind: "global",
@@ -1249,15 +1342,76 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       "UPDATE llm_for_zotero_global_conversations SET title = ? WHERE conversation_key = ?",
       ["Torn W25 library title", library.conversationKey],
     );
+    const libraryName = Zotero.Libraries.getName(
+      Zotero.Libraries.userLibraryID,
+    );
+    const paperKind = "Paper chat \u00B7 Klaus, 2017";
+    const libraryKind = `Library chat \u00B7 ${libraryName}`;
+    const expectLines = (title: string, kind: string, context: string) =>
+      until(
+        () =>
+          textOf(followerTitleOf(tornWin())) === title &&
+          kindTextOf(tornWin()) === kind,
+        () =>
+          `${context}: ${JSON.stringify({
+            title: textOf(followerTitleOf(tornWin())),
+            kind: kindTextOf(tornWin()),
+          })}`,
+      );
+
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: paperChat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    await expectLines("Torn W25 paper title", paperKind, "the paper chat");
+    assert.equal(
+      kindLineOf(follower)!.title,
+      "Torn W25 A",
+      "the kind line's tooltip is the paper's full title",
+    );
+    assert.equal(
+      kindLineOf(follower)!
+        .querySelector(".llm-follower-kind-icon")!
+        .getAttribute("data-kind"),
+      "paper",
+    );
+
+    // A History switch to the library chat updates both lines.
+    (await openFollowerHistory(follower, library.conversationKey)).click();
+    await expectLines(
+      "Torn W25 library title",
+      libraryKind,
+      "after a switch to the library chat",
+    );
+    assert.equal(kindLineOf(follower)!.title, "");
+    assert.equal(
+      kindLineOf(follower)!
+        .querySelector(".llm-follower-kind-icon")!
+        .getAttribute("data-kind"),
+      "library",
+    );
+
+    // ...and back.
+    (await openFollowerHistory(follower, paperChat.conversationKey)).click();
+    await expectLines(
+      "Torn W25 paper title",
+      paperKind,
+      "after a switch back to the paper chat",
+    );
+
+    // A follower opened on the library chat reads the same.
+    await api.closeTornChatWindowsForTest();
     await openFollower({
       system: "upstream",
       conversationKey: library.conversationKey,
       kind: "global",
     });
-    await until(
-      () => textOf(followerTitleOf(tornWin())) === "Torn W25 library title",
-      () =>
-        `the library chat's title is its own: ${JSON.stringify(textOf(followerTitleOf(tornWin())))}`,
+    await expectLines(
+      "Torn W25 library title",
+      libraryKind,
+      "the library chat",
     );
   });
 
@@ -3064,9 +3218,9 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       const keysBefore = await storedChatKeys();
       assert.include(keysBefore, key);
       const deleteInFollower = async () => {
-        const ownDelete = shownIn(follower, ".llm-standalone-icon-clear")[0];
-        assert.isOk(ownDelete, "the follower offers Delete");
-        ownDelete.click();
+        const items = await openFollowerMore(follower);
+        assert.isOk(items.delete, "the More menu offers Delete");
+        items.delete.click();
         await until(
           () => isPendingDeletion(key),
           () => `the follower's chat ${key} is queued for deletion`,
@@ -3100,6 +3254,34 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       Zotero.debug = originalDebug;
       Zotero.logError = originalLogError;
     }
+  });
+
+  // ── W35 ──────────────────────────────────────────────────────────────────
+
+  it("W35: Delete conversation in a follower's More menu shows its Undo and the follower stays open, and Undo restores the chat there", async function () {
+    await setupTornOnA("Torn W35");
+    const own = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W35 library question",
+    });
+    const key = own.conversationKey;
+    const follower = await openAnotherFollower({
+      system: "upstream",
+      conversationKey: key,
+      kind: "global",
+    });
+    const shown = recordShownKeys(follower);
+    const items = await openFollowerMore(follower);
+    items.delete.click();
+    await until(
+      () => isPendingDeletion(key),
+      () => `the follower's chat ${key} is queued for deletion`,
+    );
+    await assertKeepsChatWithUndo("More > Delete", follower, key, shown);
+    assert.isFalse(isShown(moreMenuOf(follower)), "the menu closed");
+    await undoInFollower("More > Delete", follower, key, shown);
+    assert.isTrue((await storedChatKeys()).includes(key), "the chat is back");
   });
 
   // ── W20 ──────────────────────────────────────────────────────────────────

@@ -397,33 +397,67 @@ function resolvePaperShortLabel(paper: Zotero.Item): string {
 }
 
 /**
- * A follower window's title for the chat it holds: the paper's short name
- * for a paper chat, and the chat's own title for a library chat ("Library
- * chat" while it has none).
+ * A follower window's title for the chat it holds: the chat's own title from
+ * its catalog entry, in a paper chat and a library chat alike ("Paper chat"
+ * or "Library chat" while it has none).
  */
 export async function getFollowerTitle(
   identity: TornChatIdentity,
 ): Promise<string> {
-  if (identity.kind === "paper") return getFollowerPaperTitle(identity);
+  const fallback =
+    identity.kind === "paper" ? t("Paper chat") : t("Library chat");
   try {
     const entry = await conversationRepository.getCatalogEntry({
       system: identity.system,
       conversationKey: identity.conversationKey,
-      kind: "global",
+      kind: identity.kind === "paper" ? "paper" : "global",
     });
-    return normalizeHistoryTitle(entry?.title || "") || t("Library chat");
+    return normalizeHistoryTitle(entry?.title || "") || fallback;
   } catch (err) {
     appLogger.warn("LLM: follower title lookup failed", err);
-    return t("Library chat");
+    return fallback;
   }
 }
 
-// A paper chat follower's title, known at once.
-function getFollowerPaperTitle(identity: TornChatIdentity): string {
-  const paper = Zotero.Items.get(
-    Math.floor(Number(identity.paperItemID || 0)),
-  ) as Zotero.Item | false;
-  return paper ? resolvePaperShortLabel(paper) : t("Paper chat");
+/**
+ * A follower's kind line: "Paper chat · <short label>" with the paper's full
+ * title as its tooltip, or "Library chat · <library name>".
+ */
+export function getFollowerKindLine(
+  identity: Pick<TornChatIdentity, "kind" | "libraryID" | "paperItemID">,
+): { kind: "paper" | "library"; text: string; tooltip: string } {
+  if (identity.kind === "paper") {
+    const paper = Zotero.Items.get(
+      Math.floor(Number(identity.paperItemID || 0)),
+    ) as Zotero.Item | false;
+    if (paper) {
+      let fullTitle = "";
+      try {
+        fullTitle = String(paper.getField("title") || "");
+      } catch {
+        fullTitle = "";
+      }
+      return {
+        kind: "paper",
+        text: `${t("Paper chat")} \u00B7 ${resolvePaperShortLabel(paper)}`,
+        tooltip: fullTitle,
+      };
+    }
+    return { kind: "paper", text: t("Paper chat"), tooltip: "" };
+  }
+  let libraryName = "";
+  try {
+    libraryName = String(Zotero.Libraries.getName(identity.libraryID) || "");
+  } catch {
+    libraryName = "";
+  }
+  return {
+    kind: "library",
+    text: libraryName
+      ? `${t("Library chat")} \u00B7 ${libraryName}`
+      : t("Library chat"),
+    tooltip: "",
+  };
 }
 
 // A chat window remembers its library chat in its own selection slot only
@@ -1621,6 +1655,12 @@ function openChatWindowInstance(
       // side panel toggle (below, once the side panel exists).
       let iconFollowerHistory: HTMLButtonElement | null = null;
       let iconFollowerOpenMain: HTMLButtonElement | null = null;
+      let iconFollowerMore: HTMLButtonElement | null = null;
+      // The follower's kind line under its title: an icon, then "Paper chat
+      // · Klaus et al., 2017" or "Library chat · My Library".
+      let followerKindIcon: HTMLSpanElement | null = null;
+      let followerKindText: HTMLSpanElement | null = null;
+      let followerKindLine: HTMLDivElement | null = null;
       if (linkedToReader) {
         contentTitleBarSpacer.append(
           iconPin,
@@ -1650,13 +1690,44 @@ function openChatWindowInstance(
           "llm-follower-open-main",
           t("Open in main window"),
         );
-        // Top row: the unlinked icon and the title; second row: History on
-        // the left, the chat's own actions on the right.
+        iconFollowerMore = createFollowerAction(
+          "llm-follower-more",
+          t("More actions"),
+        );
+        iconFollowerMore.setAttribute("aria-haspopup", "menu");
+        iconFollowerMore.setAttribute("aria-expanded", "false");
+        // One row. Left: the window buttons and a two-line heading (the
+        // unlinked icon and the chat's title, then the kind line). Right:
+        // History, then the side panel toggle and Open in main window (added
+        // below, once the side panel exists), then More. Task progress,
+        // Export and Delete live in the More menu and keep no button in the
+        // page: the menu runs the buttons' own handlers.
         contentTitleText.classList.add("llm-follower-title");
-        if (unlinkedIcon) tabRowLeading.append(unlinkedIcon);
-        tabRowLeading.append(contentTitleText);
-        contentTitleBarSpacer.append(iconTaskProgress, iconExport, iconClear);
-        contentTitleBar.append(iconFollowerHistory, contentTitleBarSpacer);
+        const heading = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        heading.className = "llm-follower-heading";
+        const titleLine = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        titleLine.className = "llm-follower-title-line";
+        if (unlinkedIcon) titleLine.append(unlinkedIcon);
+        titleLine.append(contentTitleText);
+        followerKindLine = doc.createElementNS(
+          HTML_NS,
+          "div",
+        ) as HTMLDivElement;
+        followerKindLine.className = "llm-follower-kind-line";
+        followerKindIcon = doc.createElementNS(
+          HTML_NS,
+          "span",
+        ) as HTMLSpanElement;
+        followerKindIcon.className = "llm-follower-kind-icon";
+        followerKindText = doc.createElementNS(
+          HTML_NS,
+          "span",
+        ) as HTMLSpanElement;
+        followerKindText.className = "llm-follower-kind-text";
+        followerKindLine.append(followerKindIcon, followerKindText);
+        heading.append(titleLine, followerKindLine);
+        tabRowLeading.append(heading);
+        tabRowTrailing.append(iconFollowerHistory);
       }
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1670,7 +1741,12 @@ function openChatWindowInstance(
         iconTaskProgress,
       );
 
-      contentWrapper.append(tabRow, contentTitleBar, contentArea);
+      // A follower has no second row.
+      if (linkedToReader) {
+        contentWrapper.append(tabRow, contentTitleBar, contentArea);
+      } else {
+        contentWrapper.append(tabRow, contentArea);
+      }
       // A follower has no chat list: its sidebar is never shown.
       if (linkedToReader) lowerArea.append(sidebar);
       lowerArea.append(contentWrapper);
@@ -1777,10 +1853,64 @@ function openChatWindowInstance(
       convCtxOpenInWindow.textContent = t("Open in New Window");
       convCtxMenu.append(convCtxOpenInWindow);
 
+      // A follower's More menu, built like the chat row menu: Task progress,
+      // Export, a line, then Delete conversation.
+      let followerMoreMenu: HTMLDivElement | null = null;
+      let followerMoreTaskItem: HTMLButtonElement | null = null;
+      let followerMoreExportItem: HTMLButtonElement | null = null;
+      let followerMoreDeleteItem: HTMLButtonElement | null = null;
+      if (!linkedToReader) {
+        const createMoreItem = (
+          action: string,
+          label: string,
+          role = "menuitem",
+        ) => {
+          const item = doc.createElementNS(
+            HTML_NS,
+            "button",
+          ) as HTMLButtonElement;
+          item.className = "llm-standalone-skill-ctx-item";
+          item.type = "button";
+          item.setAttribute("role", role);
+          item.dataset.action = action;
+          item.textContent = label;
+          return item;
+        };
+        followerMoreMenu = doc.createElementNS(
+          HTML_NS,
+          "div",
+        ) as HTMLDivElement;
+        followerMoreMenu.className =
+          "llm-standalone-skill-ctx-menu llm-follower-more-menu";
+        followerMoreMenu.setAttribute("role", "menu");
+        followerMoreMenu.style.display = "none";
+        followerMoreTaskItem = createMoreItem(
+          "task-progress",
+          t("Task progress"),
+          "menuitemcheckbox",
+        );
+        followerMoreExportItem = createMoreItem("export", t("Export"));
+        const separator = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        separator.className = "llm-follower-menu-separator";
+        separator.setAttribute("role", "separator");
+        followerMoreDeleteItem = createMoreItem(
+          "delete",
+          t("Delete conversation"),
+        );
+        followerMoreDeleteItem.classList.add("llm-standalone-skill-ctx-delete");
+        followerMoreMenu.append(
+          followerMoreTaskItem,
+          followerMoreExportItem,
+          separator,
+          followerMoreDeleteItem,
+        );
+      }
+
       root.append(lowerArea, exportPopup, skillOverlay, skillCtxMenu);
       // Its one item opens a torn-off window, which only the standalone
       // window offers.
       if (linkedToReader) root.append(convCtxMenu);
+      if (followerMoreMenu) root.append(followerMoreMenu);
       cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
         newWin,
         contentArea,
@@ -2054,16 +2184,18 @@ function openChatWindowInstance(
       };
 
       // The follower's title, known while dragstart runs (the drag image is
-      // taken right after it): a paper's short name, or the library chat's
-      // listed title, else the label the drag started on.
+      // taken right after it): the chat's listed title, else the label the
+      // drag started on.
       const tearOffDragTitle = (
         identity: TornChatIdentity,
         source: HTMLElement,
       ): string => {
-        if (identity.kind === "paper") return getFollowerPaperTitle(identity);
         const listed = standaloneSidebarEntriesByKey.get(
           identity.conversationKey,
         );
+        if (identity.kind === "paper") {
+          return normalizeHistoryTitle(listed?.title || "") || t("Paper chat");
+        }
         const label =
           source.querySelector(".llm-standalone-conv-title") || source;
         return (
@@ -2641,38 +2773,47 @@ function openChatWindowInstance(
       // -----------------------------------------------------------------------
       // Mount chat UI into contentArea
       // -----------------------------------------------------------------------
-      // A follower's title: the paper's short name for a paper chat, or the
-      // library chat's own title, read from its catalog entry (the newest
-      // read wins). The last title read for each chat shows meanwhile.
+      // A follower's title is the chat's own, read from its catalog entry
+      // (the newest read wins; the last title read for each chat shows
+      // meanwhile), and its kind line names the paper or the library.
       let followerTitleSeq = 0;
-      const followerLibraryTitles = new Map<number, string>();
+      const followerChatTitles = new Map<number, string>();
       const syncFollowerTitle = () => {
         const seq = ++followerTitleSeq;
-        if (standaloneMode === "paper" && currentBasePaperItem) {
-          contentTitleText.textContent =
-            resolvePaperShortLabel(currentBasePaperItem);
-          let fullTitle = "";
-          try {
-            fullTitle = String(currentBasePaperItem.getField("title") || "");
-          } catch {
-            fullTitle = "";
-          }
-          contentTitleText.title = fullTitle;
-          return;
-        }
         const conversationKey = activeConversationKey;
+        const paper =
+          standaloneMode === "paper" && currentBasePaperItem
+            ? currentBasePaperItem
+            : null;
+        const identity: TornChatIdentity = paper
+          ? {
+              system: currentConversationSystem,
+              conversationKey,
+              kind: "paper",
+              libraryID: getLibraryIDForPaperItem(paper),
+              paperItemID: Number(paper.id || 0),
+            }
+          : {
+              system: currentConversationSystem,
+              conversationKey,
+              kind: "global",
+              libraryID: getCurrentLibraryScopeID(),
+            };
+        const kindLine = getFollowerKindLine(identity);
+        if (followerKindText) followerKindText.textContent = kindLine.text;
+        if (followerKindIcon) followerKindIcon.dataset.kind = kindLine.kind;
+        if (followerKindLine) {
+          followerKindLine.title = kindLine.tooltip;
+          followerKindLine.dataset.kind = kindLine.kind;
+        }
         const shown =
-          followerLibraryTitles.get(conversationKey) || t("Library chat");
+          followerChatTitles.get(conversationKey) ||
+          (paper ? t("Paper chat") : t("Library chat"));
         contentTitleText.textContent = shown;
         contentTitleText.title = shown;
-        void getFollowerTitle({
-          system: currentConversationSystem,
-          conversationKey,
-          kind: "global",
-          libraryID: getCurrentLibraryScopeID(),
-        }).then((title) => {
+        void getFollowerTitle(identity).then((title) => {
           if (cancelled || newWin.closed || seq !== followerTitleSeq) return;
-          followerLibraryTitles.set(conversationKey, title);
+          followerChatTitles.set(conversationKey, title);
           contentTitleText.textContent = title;
           contentTitleText.title = title;
         });
@@ -4228,6 +4369,7 @@ function openChatWindowInstance(
       if (iconFollowerOpenMain) {
         const openMainButton = iconFollowerOpenMain;
         tabRowTrailing.append(openMainButton);
+        if (iconFollowerMore) tabRowTrailing.append(iconFollowerMore);
         // The chat moves to the standalone window (opened if closed), and
         // this window closes once that window shows it; otherwise it stays.
         openMainButton.addEventListener("click", () => {
@@ -4625,7 +4767,11 @@ function openChatWindowInstance(
       doc.addEventListener("mousedown", (e: Event) => {
         const target = e.target as HTMLElement;
         if (exportPopup.style.display !== "none") {
-          if (!exportPopup.contains(target) && !iconExport.contains(target)) {
+          if (
+            !exportPopup.contains(target) &&
+            !iconExport.contains(target) &&
+            !iconFollowerMore?.contains(target)
+          ) {
             exportPopup.style.display = "none";
           }
         }
@@ -5487,13 +5633,9 @@ function openChatWindowInstance(
         ) as HTMLElement | null;
         if (btn) btn.click();
       });
-      iconExport.addEventListener("click", (e: Event) => {
-        e.stopPropagation();
-        if (exportPopup.style.display !== "none") {
-          exportPopup.style.display = "none";
-          return;
-        }
-        const iconRect = iconExport.getBoundingClientRect();
+      // The export popup opens under `anchor`, flush with its right edge.
+      const openExportPopup = (anchor: HTMLElement) => {
+        const iconRect = anchor.getBoundingClientRect();
         exportPopup.style.position = "fixed";
         exportPopup.style.left = "auto";
         exportPopup.style.right = `${Math.max(
@@ -5502,6 +5644,14 @@ function openChatWindowInstance(
         )}px`;
         exportPopup.style.top = `${Math.round(iconRect.bottom + 4)}px`;
         exportPopup.style.display = "flex";
+      };
+      iconExport.addEventListener("click", (e: Event) => {
+        e.stopPropagation();
+        if (exportPopup.style.display !== "none") {
+          exportPopup.style.display = "none";
+          return;
+        }
+        openExportPopup(iconExport);
       });
       exportPopupCopyBtn.addEventListener("click", () => {
         exportPopup.style.display = "none";
@@ -5523,6 +5673,74 @@ function openChatWindowInstance(
         ) as HTMLElement | null;
         if (btn) btn.click();
       });
+
+      // A follower's More menu. Its items run the handlers of the Task
+      // progress, Export and Delete buttons, which a follower keeps out of
+      // the page (the same buttons, so the same state and the same flows).
+      if (
+        iconFollowerMore &&
+        followerMoreMenu &&
+        followerMoreTaskItem &&
+        followerMoreExportItem &&
+        followerMoreDeleteItem
+      ) {
+        const moreButton = iconFollowerMore;
+        const moreMenu = followerMoreMenu;
+        const taskItem = followerMoreTaskItem;
+        const hideMoreMenu = () => {
+          moreMenu.style.display = "none";
+          moreButton.setAttribute("aria-expanded", "false");
+        };
+        const showMoreMenu = () => {
+          // Task progress shows its state, and is off where the row never
+          // shows (a note chat, no conversation).
+          const applies = iconTaskProgress.style.display !== "none";
+          const pressed = iconTaskProgress.getAttribute("aria-pressed");
+          taskItem.setAttribute(
+            "aria-checked",
+            applies && pressed === "true" ? "true" : "false",
+          );
+          taskItem.disabled = !applies;
+          exportPopup.style.display = "none";
+          moreMenu.style.display = "flex";
+          const rect = moreButton.getBoundingClientRect();
+          moreMenu.style.left = "auto";
+          moreMenu.style.right = `${Math.max(
+            8,
+            Math.round(newWin.innerWidth - rect.right),
+          )}px`;
+          moreMenu.style.top = `${Math.round(rect.bottom + 4)}px`;
+          moreButton.setAttribute("aria-expanded", "true");
+        };
+        moreButton.addEventListener("click", () => {
+          if (moreMenu.style.display !== "none") hideMoreMenu();
+          else showMoreMenu();
+        });
+        taskItem.addEventListener("click", () => {
+          hideMoreMenu();
+          iconTaskProgress.click();
+        });
+        followerMoreExportItem.addEventListener("click", () => {
+          hideMoreMenu();
+          openExportPopup(moreButton);
+        });
+        followerMoreDeleteItem.addEventListener("click", () => {
+          hideMoreMenu();
+          iconClear.click();
+        });
+        doc.addEventListener("mousedown", (e: Event) => {
+          if (moreMenu.style.display === "none") return;
+          const target = e.target as Node;
+          if (!moreMenu.contains(target) && !moreButton.contains(target)) {
+            hideMoreMenu();
+          }
+        });
+        doc.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Escape" && moreMenu.style.display !== "none") {
+            hideMoreMenu();
+          }
+        });
+      }
 
       // -----------------------------------------------------------------------
       // Top bar tab switching
