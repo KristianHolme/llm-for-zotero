@@ -1982,6 +1982,216 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
   });
 
+  // ── Open in main window ──────────────────────────────────────────────────
+
+  function clickOpenInMainWindow(follower: Window): void {
+    const button = follower.document.querySelector(
+      ".llm-follower-open-main",
+    ) as HTMLButtonElement | null;
+    assert.isOk(button, "the follower has Open in main window");
+    assert.isFalse(button!.disabled, "Open in main window is enabled");
+    button!.click();
+  }
+
+  /**
+   * Papers A and B open in reader tabs, B shown; A has two stored chats and
+   * a follower holds the older one, so the leader cannot land on it by
+   * picking A's newest chat.
+   */
+  async function setupFollowerOnOlderChatOfA(title: string) {
+    const a = await newPaper(`${title} A`);
+    const b = await newPaper(`${title} B`);
+    const readerA = await openReader(a);
+    const readerB = await openReader(b);
+    const older = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: `${title} older question`,
+    });
+    const newer = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: `${title} newer question`,
+    });
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: older.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    return {
+      a,
+      b,
+      readerA,
+      readerB,
+      key: older.conversationKey,
+      newerKey: newer.conversationKey,
+      follower,
+    };
+  }
+
+  /** The leader shows chat `key` of paper `paperId`, and Zotero shows its reader. */
+  async function assertLeaderOnPaperChat(
+    context: string,
+    expected: { key: number; paperId: number; readerTabID: string },
+  ): Promise<void> {
+    await until(
+      () => {
+        const state = stateOf(standaloneWin());
+        return (
+          state.conversationKind === "paper" &&
+          state.conversationKey === expected.key &&
+          state.basePaperItemId === expected.paperId &&
+          mainWin().Zotero_Tabs.selectedID === expected.readerTabID
+        );
+      },
+      () =>
+        `${context}: the leader shows chat ${expected.key} of paper ${expected.paperId} and Zotero shows its reader: ${JSON.stringify(
+          {
+            leader: stateOf(standaloneWin()),
+            selectedTab: mainWin().Zotero_Tabs.selectedID,
+            readerTab: expected.readerTabID,
+          },
+        )}`,
+      15_000,
+    );
+  }
+
+  // ── W29 ──────────────────────────────────────────────────────────────────
+
+  it("W29: Open in main window shows a follower's paper chat in the leader, moves Zotero to its paper, and closes the follower", async function () {
+    const { a, b, readerA, readerB, key, newerKey, follower } =
+      await setupFollowerOnOlderChatOfA("Torn W29");
+    await api.openStandaloneForItem(b.parentItemId);
+    showReader(readerB);
+    await until(
+      () =>
+        stateOf(standaloneWin()).basePaperItemId === b.parentItemId &&
+        mainWin().Zotero_Tabs.selectedID === readerB.tabID,
+      () =>
+        `the leader follows the reader on B: ${JSON.stringify(stateOf(standaloneWin()))}`,
+    );
+    const leader = standaloneWin()!;
+    const focus = spyOnFocus(leader);
+    try {
+      clickOpenInMainWindow(follower);
+      await assertLeaderOnPaperChat("after Open in main window", {
+        key,
+        paperId: a.parentItemId,
+        readerTabID: readerA.tabID,
+      });
+      await until(
+        () => follower.closed,
+        () => "the follower closes",
+      );
+      assert.isAtLeast(focus.count(), 1, "the leader comes forward");
+    } finally {
+      focus.restore();
+    }
+    assert.isTrue(standaloneWin() === leader, "the same leader shows it");
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0, "no follower is left");
+    // Past the reader-follow wait (1.5 s), the leader has not bounced back
+    // to B or moved to A's newest chat.
+    await Zotero.Promise.delay(2_000);
+    const state = stateOf(leader);
+    assert.equal(state.conversationKey, key, JSON.stringify(state));
+    assert.notEqual(state.conversationKey, newerKey);
+    assert.equal(state.basePaperItemId, a.parentItemId, JSON.stringify(state));
+    assert.equal(mainWin().Zotero_Tabs.selectedID, readerA.tabID);
+  });
+
+  // ── W30 ──────────────────────────────────────────────────────────────────
+
+  it("W30: Open in main window with the leader closed opens the leader on the follower's paper chat", async function () {
+    const { a, readerA, readerB, key, follower } =
+      await setupFollowerOnOlderChatOfA("Torn W30");
+    await api.closeStandalone();
+    showReader(readerB);
+    assert.isNull(standaloneWin(), "the leader is closed");
+
+    clickOpenInMainWindow(follower);
+    await until(
+      () => Boolean(standaloneWin()),
+      () => "Open in main window opens the leader",
+      15_000,
+    );
+    assert.isTrue(standaloneWin() !== follower, "the leader is a new window");
+    await assertLeaderOnPaperChat("after the leader opened", {
+      key,
+      paperId: a.parentItemId,
+      readerTabID: readerA.tabID,
+    });
+    await until(
+      () => follower.closed,
+      () => "the follower closes",
+    );
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0, "no follower is left");
+    await Zotero.Promise.delay(2_000);
+    const state = stateOf(standaloneWin());
+    assert.equal(state.conversationKey, key, JSON.stringify(state));
+    assert.equal(state.basePaperItemId, a.parentItemId, JSON.stringify(state));
+  });
+
+  // ── W31 ──────────────────────────────────────────────────────────────────
+
+  it("W31: Open in main window shows a library-chat follower's chat in the leader's Library chat", async function () {
+    const a = await newPaper("Torn W31 A");
+    const older = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W31 older library question",
+    });
+    await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W31 newer library question",
+    });
+    await api.openStandaloneForItem(a.parentItemId);
+    await until(
+      () =>
+        stateOf(standaloneWin()).conversationKind === "paper" &&
+        stateOf(standaloneWin()).basePaperItemId === a.parentItemId,
+      () =>
+        `the leader shows A's paper chat: ${JSON.stringify(stateOf(standaloneWin()))}`,
+    );
+    const leader = standaloneWin()!;
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: older.conversationKey,
+      kind: "global",
+    });
+    const selectedTab = mainWin().Zotero_Tabs.selectedID;
+
+    clickOpenInMainWindow(follower);
+    await until(
+      () =>
+        stateOf(leader).conversationKind === "global" &&
+        stateOf(leader).conversationKey === older.conversationKey,
+      () =>
+        `the leader shows the library chat ${older.conversationKey}: ${JSON.stringify(stateOf(leader))}`,
+      15_000,
+    );
+    await until(
+      () => follower.closed,
+      () => "the follower closes",
+    );
+    const libraryTab = leader.document.querySelector(
+      '.llm-standalone-tab[data-tab="open"]',
+    );
+    assert.isTrue(
+      Boolean(libraryTab?.classList.contains("active")),
+      "the leader is in Library chat",
+    );
+    assert.equal(
+      mainWin().Zotero_Tabs.selectedID,
+      selectedTab,
+      "a library chat leaves Zotero's tabs as they were",
+    );
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0, "no follower is left");
+  });
+
   // ── W15 ──────────────────────────────────────────────────────────────────
 
   it("W15: with only torn-off windows open, Open in Window opens the standalone window", async function () {

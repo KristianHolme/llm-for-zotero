@@ -780,6 +780,83 @@ export function openStandaloneChat(options?: {
   // openChatWindowInstance).
 }
 
+// Shows a follower's chat in the open standalone window; set by its
+// initWindow, cleared on close. Resolves true once the window shows it.
+let standaloneConversationOpener:
+  | ((identity: TornChatIdentity) => Promise<boolean>)
+  | null = null;
+
+// The chat a standalone window still opening shows once its initWindow has
+// run; a later request replaces it (the earlier one resolves false).
+let pendingLeaderConversation: {
+  identity: TornChatIdentity;
+  settle: (shown: boolean) => void;
+} | null = null;
+
+function takePendingLeaderConversation(): typeof pendingLeaderConversation {
+  const pending = pendingLeaderConversation;
+  pendingLeaderConversation = null;
+  return pending;
+}
+
+/**
+ * "Open in main window": shows a follower's chat in the standalone window,
+ * opening it first when it is closed, and brings it forward. Resolves true
+ * once the standalone window shows the chat; false when it cannot (the
+ * chat's paper is gone, or the window did not open).
+ */
+export function openConversationInLeader(
+  identity: TornChatIdentity,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    takePendingLeaderConversation()?.settle(false);
+    const leader = getStandaloneSessionWindow();
+    const opener = standaloneConversationOpener;
+    if (leader && !standaloneSessionState.pending) {
+      // No opener: the window failed to set itself up.
+      if (!opener) {
+        resolve(false);
+        return;
+      }
+      bringChatWindowForward(leader);
+      opener(identity).then(resolve, () => resolve(false));
+      return;
+    }
+    // The window opens on the chat's paper (or the library chat itself) and
+    // in its runtime; the opener then shows the exact chat.
+    let initialItem: Zotero.Item;
+    if (identity.kind === "paper") {
+      const paper = Zotero.Items.get(
+        Math.floor(Number(identity.paperItemID || 0)),
+      ) as Zotero.Item | false;
+      if (!paper || (paper as any).deleted) {
+        resolve(false);
+        return;
+      }
+      initialItem = paper;
+    } else {
+      const libraryID = Math.floor(Number(identity.libraryID || 0)) || 1;
+      initialItem = (
+        identity.system === "claude_code"
+          ? createClaudeGlobalPortalItem(libraryID, identity.conversationKey)
+          : identity.system === "codex"
+            ? createCodexGlobalPortalItem(libraryID, identity.conversationKey)
+            : createGlobalPortalItem(libraryID, identity.conversationKey)
+      ) as Zotero.Item;
+    }
+    pendingLeaderConversation = { identity, settle: resolve };
+    // A window still opening shows the chat once its initWindow has run.
+    if (isStandaloneWindowActive()) return;
+    openStandaloneChat({
+      initialItem,
+      initialConversationSystem: identity.system,
+    });
+    if (!isStandaloneWindowActive()) {
+      takePendingLeaderConversation()?.settle(false);
+    }
+  });
+}
+
 /**
  * Open a torn-off chat window on one conversation. It is another instance of
  * the standalone window document that keeps its own paper: it does not
@@ -999,6 +1076,9 @@ function openChatWindowInstance(
   // only), so closing a window clears only its own.
   let ownItemChangeHandler: ((item: Zotero.Item | null) => void) | null = null;
   let ownActivePaperIDReader: (() => number | null) | null = null;
+  let ownConversationOpener:
+    | ((identity: TornChatIdentity) => Promise<boolean>)
+    | null = null;
   let cleanupStandaloneVerticalResize: (() => void) | null = null;
   let cleanupStandaloneSidebarResize: (() => void) | null = null;
   let cleanupStandaloneSidebarFlyout: (() => void) | null = null;
@@ -1536,12 +1616,10 @@ function openChatWindowInstance(
           t("History"),
         );
         iconFollowerHistory.setAttribute("aria-haspopup", "dialog");
-        // Wired in a later task; shown now so the layout is final.
         iconFollowerOpenMain = createFollowerAction(
           "llm-follower-open-main",
           t("Open in main window"),
         );
-        iconFollowerOpenMain.disabled = true;
         // Top row: the unlinked icon and the title; second row: History on
         // the left, the chat's own actions on the right.
         contentTitleText.classList.add("llm-follower-title");
@@ -1803,14 +1881,15 @@ function openChatWindowInstance(
       // window never opens another. Never for WebChat (its mode, rows and
       // session chats) or for note chats.
       // -----------------------------------------------------------------------
-      const tearOffIdentityFor = (candidate: {
+      // The chat as one a follower can hold, or null (WebChat, note chats,
+      // a paper that is gone).
+      const chatIdentityFor = (candidate: {
         system: ConversationSystem;
         conversationKey: number;
         kind: "paper" | "global";
         libraryID: number;
         paperItemID?: number;
       }): TornChatIdentity | null => {
-        if (!linkedToReader) return null;
         if (cancelled || newWin.closed || isInWebChatMode) return null;
         // A note session lists and shows the note's own chats.
         if (resolveActiveNoteSession(activeItem)) return null;
@@ -1849,6 +1928,10 @@ function openChatWindowInstance(
           paperItemID,
         };
       };
+      const tearOffIdentityFor = (
+        candidate: Parameters<typeof chatIdentityFor>[0],
+      ): TornChatIdentity | null =>
+        linkedToReader ? chatIdentityFor(candidate) : null;
 
       const tearOffIdentityForEntry = (
         conv: SidebarConv,
@@ -1877,10 +1960,10 @@ function openChatWindowInstance(
       };
 
       // The chat on screen, while a paper or library chat is mounted.
-      const tearOffIdentityForTitle = (): TornChatIdentity | null => {
+      const shownChatIdentity = (): TornChatIdentity | null => {
         if (standaloneMode === "paper") {
           if (!currentBasePaperItem) return null;
-          return tearOffIdentityFor({
+          return chatIdentityFor({
             system: currentConversationSystem,
             conversationKey: activeConversationKey,
             kind: "paper",
@@ -1888,13 +1971,15 @@ function openChatWindowInstance(
             paperItemID: Number(currentBasePaperItem.id || 0),
           });
         }
-        return tearOffIdentityFor({
+        return chatIdentityFor({
           system: currentConversationSystem,
           conversationKey: activeConversationKey,
           kind: "global",
           libraryID: getCurrentLibraryScopeID(),
         });
       };
+      const tearOffIdentityForTitle = (): TornChatIdentity | null =>
+        linkedToReader ? shownChatIdentity() : null;
 
       // The tear-off drag under way. Its source region is the node that
       // gets the drag's `drag` and `dragend` events (dataTransfer.addElement),
@@ -3745,8 +3830,21 @@ function openChatWindowInstance(
         return true;
       };
 
+      // A history row, or a follower's chat (see showFollowerChat): the
+      // fields a switch reads. selectInZotero: false leaves showing the
+      // paper in Zotero to the caller.
       const selectStandaloneSearchEntry = async (
-        entry: ConversationHistoryEntry,
+        entry: Pick<
+          ConversationHistoryEntry,
+          | "system"
+          | "kind"
+          | "sourceState"
+          | "conversationKey"
+          | "libraryID"
+          | "paperItemID"
+          | "sessionVersion"
+        >,
+        options?: { selectInZotero?: boolean },
       ): Promise<boolean> => {
         // This window did not switch (the side panel keeps its tab).
         if (bringForwardOtherTornWindow(entry.conversationKey)) return false;
@@ -3850,6 +3948,7 @@ function openChatWindowInstance(
               // paper and leaves Zotero as it is.
               if (
                 linkedToReader &&
+                options?.selectInZotero !== false &&
                 navigationDecision === "select-target-paper"
               ) {
                 const selected = await maybeSelectStandaloneHistoryPaperItem(
@@ -4046,7 +4145,25 @@ function openChatWindowInstance(
           searchPopupController.toggle({ anchor: historyButton });
         });
       }
-      if (iconFollowerOpenMain) tabRowTrailing.append(iconFollowerOpenMain);
+      if (iconFollowerOpenMain) {
+        const openMainButton = iconFollowerOpenMain;
+        tabRowTrailing.append(openMainButton);
+        // The chat moves to the standalone window (opened if closed), and
+        // this window closes once that window shows it; otherwise it stays.
+        openMainButton.addEventListener("click", () => {
+          const identity = shownChatIdentity();
+          if (!identity || openMainButton.disabled) return;
+          openMainButton.disabled = true;
+          void openConversationInLeader(identity).then((shown) => {
+            if (cancelled || newWin.closed) return;
+            if (shown) {
+              newWin.close();
+              return;
+            }
+            openMainButton.disabled = false;
+          });
+        });
+      }
 
       // ----------------------------------------------------------------
       // Skills popup — open/close/render/interactions
@@ -6075,6 +6192,37 @@ function openChatWindowInstance(
         }
         revealPaperInZotero(paperID, readerTab?.tabID);
       };
+      // "Open in main window" from a follower: this window shows the
+      // follower's chat. A paper chat shows its paper in Zotero too, the way
+      // a pinned paper does, so following the reader does not pull this
+      // window back to the paper Zotero showed before. True once shown.
+      const showFollowerChat = async (
+        identity: TornChatIdentity,
+      ): Promise<boolean> => {
+        if (cancelled || newWin.closed) return false;
+        const target = {
+          system: identity.system,
+          kind: identity.kind,
+          sourceState: "active" as const,
+          conversationKey: identity.conversationKey,
+          libraryID: identity.libraryID,
+          paperItemID: identity.paperItemID,
+        };
+        if (identity.kind !== "paper") {
+          return selectStandaloneSearchEntry(target);
+        }
+        const paperID = Math.floor(Number(identity.paperItemID || 0));
+        pinnedPaperNavigation = { paperID, until: Date.now() + 1500 };
+        const shown = await selectStandaloneSearchEntry(target, {
+          selectInZotero: false,
+        });
+        if (!shown || cancelled || newWin.closed) {
+          pinnedPaperNavigation = null;
+          return false;
+        }
+        revealPaperInZotero(paperID, findPaperReaderTab(paperID)?.tabID);
+        return true;
+      };
       renderPinnedPapers = () => {
         if (cancelled) return;
         const list = sidebarView.pinnedList;
@@ -6248,8 +6396,25 @@ function openChatWindowInstance(
         "mode=" + standaloneMode,
       );
       scheduleStandaloneSidebarRender();
+      // Followers' "Open in main window" lands here; a request made while
+      // this window was opening runs now, after the initial mount.
+      if (linkedToReader) {
+        ownConversationOpener = showFollowerChat;
+        standaloneConversationOpener = ownConversationOpener;
+        const pending = takePendingLeaderConversation();
+        if (pending) {
+          showFollowerChat(pending.identity).then(pending.settle, (err) => {
+            appLogger.warn("LLM: standalone open follower chat failed", err);
+            pending.settle(false);
+          });
+        }
+      }
     } catch (err) {
       appLogger.warn("LLM: standalone initWindow failed", err);
+      // A follower waiting on this window keeps its chat.
+      if (linkedToReader && !ownConversationOpener) {
+        takePendingLeaderConversation()?.settle(false);
+      }
       // Show a visible error so the window isn't silently blank
       try {
         const root = newWin.document?.getElementById(
@@ -6305,8 +6470,9 @@ function openChatWindowInstance(
       appLogger.warn("LLM: standalone side panel cleanup failed", err);
     }
     disposeStandaloneSidePanel = null;
-    // Only the window that set the reader link clears it: closing a torn-off
-    // window leaves the standalone window following the PDF reader.
+    // Only the window that set the reader link (and the follower-chat
+    // opener) clears it: closing a torn-off window leaves the standalone
+    // window following the PDF reader.
     if (
       ownItemChangeHandler &&
       standaloneItemChangeHandler === ownItemChangeHandler
@@ -6319,8 +6485,15 @@ function openChatWindowInstance(
     ) {
       standaloneActivePaperIDReader = null;
     }
+    if (
+      ownConversationOpener &&
+      standaloneConversationOpener === ownConversationOpener
+    ) {
+      standaloneConversationOpener = null;
+    }
     ownItemChangeHandler = null;
     ownActivePaperIDReader = null;
+    ownConversationOpener = null;
     themeObserver?.disconnect();
     themeObserver = null;
     if (enforceStandaloneMinimumSize) {
