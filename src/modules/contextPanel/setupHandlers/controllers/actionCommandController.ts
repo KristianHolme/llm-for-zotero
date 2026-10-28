@@ -1,3 +1,4 @@
+import { t } from "../../../../utils/i18n";
 import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
@@ -362,7 +363,7 @@ export function createActionCommandController(
           textContent: action.name,
         }),
         createElement(ownerDoc, "div", "llm-action-picker-description", {
-          textContent: action.description,
+          textContent: t(action.description),
         }),
       );
       option.addEventListener("mousedown", (event: Event) => {
