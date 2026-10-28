@@ -12488,8 +12488,6 @@ label.llm-search-results-item:hover {
 }
 
 .llm-agent-action-summary-card[data-mode="action"] {
-  /* Scale shared row labels together, without changing note-content cards. */
-  --llm-fs-12: var(--llm-fs-11);
   padding: 8px 10px;
   border-radius: 10px;
 }
