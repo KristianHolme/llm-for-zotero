@@ -1146,14 +1146,29 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       historyRect.bottom - 1,
       "the popup opens below the History button",
     );
+    // The History button sits among the actions at the right of its row,
+    // so the popup opens under that row against the window's right edge, at
+    // its full width (480 px, or the window less its margins), never as a
+    // strip beside the button.
+    const viewWidth = doc.documentElement!.clientWidth;
     assert.isAtMost(
-      Math.abs(popupRect.left - historyRect.left),
-      16,
-      `the popup lines up with the History button: ${JSON.stringify({
-        popup: popupRect.left,
-        history: historyRect.left,
+      Math.abs(viewWidth - 8 - popupRect.right),
+      2,
+      `the popup sits against the window's right edge: ${JSON.stringify({
+        popup: popupRect.right,
+        view: viewWidth,
       })}`,
     );
+    assert.isAtLeast(
+      popupRect.width,
+      Math.min(480, viewWidth - 16) - 2,
+      `the popup has its full width: ${JSON.stringify({
+        popup: popupRect.width,
+        view: viewWidth,
+        history: historyRect.right,
+      })}`,
+    );
+    assert.isAtLeast(popupRect.left, 0, "the popup stays in the window");
     const input = searchOverlayOf(torn)!.querySelector(
       ".llm-standalone-search-input",
     ) as HTMLElement;

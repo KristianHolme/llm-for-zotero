@@ -29,7 +29,8 @@ export const HISTORY_SEARCH_POPUP_THEME_LIGHT_CLASS =
 
 /**
  * Where the popup opens: centered over its parent by default, or right
- * under `anchor` (a follower window's History button), left-aligned with it.
+ * under `anchor` (a follower window's History button), against the window's
+ * right edge at full width.
  */
 export type HistorySearchPopupOpenOptions = {
   anchor?: HTMLElement | null;
@@ -913,13 +914,14 @@ export function createHistorySearchPopupController(
     if (!anchor) {
       overlay.classList.remove("llm-standalone-search-overlay-anchored");
       overlay.style.removeProperty("padding-top");
-      overlay.style.removeProperty("padding-left");
       return;
     }
+    // The button sits among the actions at the right of its row, so the
+    // popup opens under that row against the window's right edge (CSS) at
+    // its full width; aligning it with the button left it a narrow strip.
     const rect = anchor.getBoundingClientRect();
     overlay.classList.add("llm-standalone-search-overlay-anchored");
     overlay.style.paddingTop = `${Math.round(rect.bottom + 4)}px`;
-    overlay.style.paddingLeft = `${Math.max(8, Math.round(rect.left))}px`;
   };
 
   const controller: HistorySearchPopupController = {
