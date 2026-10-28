@@ -3311,7 +3311,7 @@ export function createStandaloneSidePanel(
 
   toggleButton.addEventListener("click", () => {
     if (isOpen()) requestPanelClose();
-    else setTabsState(openSidePanel(tabsState));
+    else if (!restoreStashedWorkspace()) setTabsState(openSidePanel(tabsState));
   });
   closeButton.addEventListener("click", () => requestPanelClose());
   newTabButton.addEventListener("click", () =>
@@ -3322,7 +3322,8 @@ export function createStandaloneSidePanel(
   // The panel shows the tabs of the main chat's paper (or library). Moving
   // the main chat elsewhere puts them away, hidden but alive (a side chat
   // keeps answering), when that paper's tabs are kept; otherwise they are
-  // dropped. Coming back shows them as they were.
+  // dropped. Coming back shows them as they were. Whether the panel is open
+  // is the user's alone: moving the main chat never opens or closes it.
   type StashedWorkspace = {
     state: SidePanelTabsState;
     views: TabView[];
@@ -3351,36 +3352,58 @@ export function createStandaloneSidePanel(
     hidePanelConfirm();
     const leavingState = tabsState;
     const leavingViews = [...views.values()];
-    const keep = leavingState.open && deps.shouldKeepWorkspace(previousKey);
-    const incoming = stashedWorkspaces.get(nextKey);
-    stashedWorkspaces.delete(nextKey);
+    const open = leavingState.open;
+    const keep = open && deps.shouldKeepWorkspace(previousKey);
+    // A shut panel stays shut: the paper's tabs wait for it to open.
+    const incoming = open ? stashedWorkspaces.get(nextKey) : undefined;
+    if (incoming) stashedWorkspaces.delete(nextKey);
     views.clear();
     for (const view of incoming?.views || []) views.set(view.id, view);
-    const putAwayLeaving = () => {
-      for (const view of leavingViews) putAwayView(view);
-      if (keep) {
-        stashedWorkspaces.set(previousKey, {
-          state: leavingState,
-          views: leavingViews,
-        });
-      } else {
-        for (const view of leavingViews) disposeView(view);
-      }
-    };
-    const nextState = incoming?.state || CLOSED_SIDE_PANEL_TABS;
-    const wasOpen = isOpen();
-    tabsState = nextState;
-    if (wasOpen && !isOpen()) {
-      // The panel slides shut over the tabs it was showing.
-      slideClose([], putAwayLeaving);
-      renderToggle();
-      deps.onLayoutChanged();
-      return;
+    for (const view of leavingViews) putAwayView(view);
+    if (keep) {
+      // Tabs still waiting from before the panel was shut here give way.
+      dropWorkspace(previousKey);
+      stashedWorkspaces.set(previousKey, {
+        state: leavingState,
+        views: leavingViews,
+      });
+    } else {
+      for (const view of leavingViews) disposeView(view);
     }
-    putAwayLeaving();
-    if (isOpen() && !wasOpen) slideOpen();
-    else render();
-    if (isOpen() !== wasOpen) deps.onLayoutChanged();
+    let nextState = incoming?.state || CLOSED_SIDE_PANEL_TABS;
+    let progress: TaskProgressTabView | null = null;
+    if (open && !incoming) {
+      // An open panel stays open on a chat with no tabs yet: the New tab
+      // page, or its own Task progress when Task progress was open.
+      nextState = openSidePanel(CLOSED_SIDE_PANEL_TABS);
+      if (leavingState.tabs.some((tab) => tab.kind === "progress")) {
+        const result = openTaskProgressSidePanelTab(
+          nextState,
+          nextTabId("progress"),
+        );
+        if (result.tabId) {
+          progress = buildTaskProgressView(result.tabId);
+          views.set(result.tabId, progress);
+          nextState = result.state;
+        }
+      }
+    }
+    tabsState = nextState;
+    render();
+    progress?.view.resume();
+  };
+  /**
+   * The toggle on a shut panel: a paper's tabs put away while the panel
+   * was open elsewhere come back as they were. False when there are none.
+   */
+  const restoreStashedWorkspace = (): boolean => {
+    const stashed = workspaceKey ? stashedWorkspaces.get(workspaceKey) : null;
+    if (!stashed || disposed) return false;
+    finishSlide();
+    stashedWorkspaces.delete(workspaceKey!);
+    for (const view of stashed.views) views.set(view.id, view);
+    setTabsState(stashed.state);
+    return true;
   };
   const dropWorkspace = (key: string) => {
     const stashed = stashedWorkspaces.get(key);
