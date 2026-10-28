@@ -260,6 +260,10 @@ import {
   togglePinnedPaper,
   updateReadyPinnedPapers,
 } from "./standalonePinnedPapers";
+import {
+  createZoteroNavigationHost,
+  navigateToLibraryObject,
+} from "./agentTrace/actionCardNavigation";
 import { formatPaperCreatorYearLabel } from "./setupHandlers/controllers/composeContextController";
 import { resolvePaperContextRefFromItem } from "../../services/paperContent/paperAttribution";
 import {
@@ -1470,7 +1474,8 @@ function openChatWindowInstance(
       if (linkedToReader) {
         tabRow.append(tabRowLeading, tabGroup, tabRowTrailing);
       } else {
-        tabRow.append(tabRowLeading, tabRowTrailing);
+        // A follower's actions sit in the row under this one.
+        tabRow.append(tabRowLeading);
       }
 
       // -- Lower area: sidebar + content side by side --
@@ -1606,9 +1611,11 @@ function openChatWindowInstance(
       if (!linkedToReader) {
         unlinkedIcon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
         unlinkedIcon.className = "llm-standalone-unlinked-icon";
-        unlinkedIcon.title = t(
-          "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+        const unlinkedLabel = t(
+          "This chat's context does not switch with the PDF reader tab in Zotero.",
         );
+        unlinkedIcon.title = unlinkedLabel;
+        unlinkedIcon.setAttribute("aria-label", unlinkedLabel);
         root.dataset.readerLink = "unlinked";
       }
 
@@ -1661,6 +1668,10 @@ function openChatWindowInstance(
       let followerKindIcon: HTMLSpanElement | null = null;
       let followerKindText: HTMLSpanElement | null = null;
       let followerKindLine: HTMLDivElement | null = null;
+      // The second row under the divider: the kind line at the left, the four
+      // actions at the right.
+      let followerKindRow: HTMLDivElement | null = null;
+      let followerActions: HTMLDivElement | null = null;
       if (linkedToReader) {
         contentTitleBarSpacer.append(
           iconPin,
@@ -1712,19 +1723,15 @@ function openChatWindowInstance(
           "div",
         ) as HTMLDivElement;
         followerKindLine.className = "llm-follower-kind-line";
-        followerKindIcon = doc.createElementNS(
-          HTML_NS,
-          "span",
-        ) as HTMLSpanElement;
-        followerKindIcon.className = "llm-follower-kind-icon";
-        followerKindText = doc.createElementNS(
-          HTML_NS,
-          "span",
-        ) as HTMLSpanElement;
-        followerKindText.className = "llm-follower-kind-text";
-        followerKindLine.append(followerKindIcon, followerKindText);
+        // The icon and text are filled in by syncFollowerTitle, inside a
+        // button for a paper chat and a plain span for a library chat.
+        followerKindRow = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        followerKindRow.className = "llm-follower-kind-row";
+        followerActions = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        followerActions.className = "llm-follower-actions";
+        followerActions.append(iconFollowerHistory);
+        followerKindRow.append(followerKindLine, followerActions);
         tabRowLeading.append(titleLine);
-        tabRowTrailing.append(iconFollowerHistory);
       }
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1742,8 +1749,8 @@ function openChatWindowInstance(
       // top row instead.
       if (linkedToReader) {
         contentWrapper.append(tabRow, contentTitleBar, contentArea);
-      } else if (followerKindLine) {
-        contentWrapper.append(tabRow, followerKindLine, contentArea);
+      } else if (followerKindRow) {
+        contentWrapper.append(tabRow, followerKindRow, contentArea);
       } else {
         contentWrapper.append(tabRow, contentArea);
       }
@@ -2777,6 +2784,33 @@ function openChatWindowInstance(
       // (the newest read wins; the last title read for each chat shows
       // meanwhile), and its kind line names the paper or the library.
       let followerTitleSeq = 0;
+      let followerKindPaperID = 0;
+      // Shows the chat's own paper in the main window's library tab, not the
+      // paper the reader has open.
+      const showFollowerPaperInLibrary = async () => {
+        const itemID = followerKindPaperID;
+        if (itemID <= 0 || cancelled || newWin.closed) return;
+        try {
+          const mainTabs = (Zotero.getMainWindow() as any)?.Zotero_Tabs;
+          if (mainTabs && mainTabs.selectedID !== "zotero-pane") {
+            mainTabs.select("zotero-pane");
+          }
+          await navigateToLibraryObject(
+            { kind: "item", itemId: itemID, label: "" },
+            createZoteroNavigationHost(),
+          );
+          if (mainTabs && mainTabs.selectedID !== "zotero-pane") {
+            mainTabs.select("zotero-pane");
+          }
+        } catch (err) {
+          appLogger.warn("LLM: follower show in library failed", err);
+        }
+      };
+      followerKindLine?.addEventListener("click", (event: Event) => {
+        const target = event.target as Element | null;
+        if (!target?.closest?.(".llm-follower-kind-link")) return;
+        void showFollowerPaperInLibrary();
+      });
       const followerChatTitles = new Map<number, string>();
       const syncFollowerTitle = () => {
         const seq = ++followerTitleSeq;
@@ -2800,10 +2834,36 @@ function openChatWindowInstance(
               libraryID: getCurrentLibraryScopeID(),
             };
         const kindLine = getFollowerKindLine(identity);
-        if (followerKindText) followerKindText.textContent = kindLine.text;
-        if (followerKindIcon) followerKindIcon.dataset.kind = kindLine.kind;
         if (followerKindLine) {
-          followerKindLine.title = kindLine.tooltip;
+          // A paper chat's line is a button that shows the paper in the
+          // library; a library chat's is plain text. Rebuilt on every sync so
+          // an in-place switch changes both the target and the role.
+          const isPaper = kindLine.kind === "paper";
+          followerKindPaperID = paper ? Number(paper.id || 0) : 0;
+          const main = doc.createElementNS(
+            HTML_NS,
+            isPaper ? "button" : "span",
+          ) as HTMLButtonElement | HTMLSpanElement;
+          main.className = "llm-follower-kind-main";
+          const icon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          icon.className = "llm-follower-kind-icon";
+          icon.dataset.kind = kindLine.kind;
+          const text = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          text.className = "llm-follower-kind-text";
+          text.textContent = kindLine.text;
+          if (isPaper) {
+            const label = t("Show in library");
+            (main as HTMLButtonElement).type = "button";
+            main.classList.add("llm-follower-kind-link");
+            main.title = kindLine.tooltip
+              ? `${label}: ${kindLine.tooltip}`
+              : label;
+            main.setAttribute("aria-label", label);
+          }
+          main.append(icon, text);
+          followerKindIcon = icon;
+          followerKindText = text;
+          followerKindLine.replaceChildren(main);
           followerKindLine.dataset.kind = kindLine.kind;
         }
         const shown =
@@ -4299,7 +4359,7 @@ function openChatWindowInstance(
         win: newWin,
         lowerArea,
         mainBody: contentArea,
-        toggleHost: tabRowTrailing,
+        toggleHost: followerActions || tabRowTrailing,
         readOnly: !linkedToReader,
         getMainContext: () => ({
           mode: standaloneMode,
@@ -4368,8 +4428,8 @@ function openChatWindowInstance(
       }
       if (iconFollowerOpenMain) {
         const openMainButton = iconFollowerOpenMain;
-        tabRowTrailing.append(openMainButton);
-        if (iconFollowerMore) tabRowTrailing.append(iconFollowerMore);
+        followerActions?.append(openMainButton);
+        if (iconFollowerMore) followerActions?.append(iconFollowerMore);
         // The chat moves to the standalone window (opened if closed), and
         // this window closes once that window shows it; otherwise it stays.
         openMainButton.addEventListener("click", () => {

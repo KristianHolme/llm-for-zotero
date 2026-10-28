@@ -4710,13 +4710,9 @@
   gap: 6px;
 }
 
-#llmforzotero-standalone-chat-root[data-window-role="follower"]
-  .llm-standalone-tab-row-trailing {
-  flex: 0 0 auto;
-}
-
 .llm-follower-title-line,
-.llm-follower-kind-line {
+.llm-follower-kind-line,
+.llm-follower-kind-main {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4734,7 +4730,7 @@
   min-width: 0;
   font-size: var(--llm-standalone-ui-font-size);
   line-height: var(--llm-standalone-ui-line-height);
-  font-weight: 400;
+  font-weight: 600;
   color: var(--fill-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -4744,16 +4740,57 @@
   cursor: default;
 }
 
-.llm-follower-kind-line {
+/* The second row: the kind line at the left, the four actions at the right.
+ * The kind text ellipsizes before it can push the buttons. */
+.llm-follower-kind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   flex: 0 0 auto;
+  gap: 8px;
+  padding: 4px 16px 0;
+  min-width: 0;
+}
+
+.llm-follower-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--llm-standalone-chrome-gap);
+}
+
+.llm-follower-kind-line {
+  flex: 0 1 auto;
   gap: 5px;
-  padding: 8px 16px 0;
   font-size: var(--llm-fs-12);
   line-height: calc(16px * var(--llm-font-scale));
   color: var(--fill-secondary);
   -moz-user-select: none;
   user-select: none;
   cursor: default;
+}
+
+.llm-follower-kind-main {
+  gap: 5px;
+}
+
+/* A paper chat's kind line is a button; it looks like the plain line until
+ * hovered. */
+.llm-follower-kind-link {
+  appearance: none;
+  -moz-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.llm-follower-kind-link:hover,
+.llm-follower-kind-link:focus-visible {
+  color: var(--fill-primary);
 }
 
 .llm-follower-kind-text {
@@ -18163,6 +18200,8 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
 
 :root[customtitlebar] .llm-standalone-side-panel-toggle,
 :root[customtitlebar] .llm-follower-open-main,
+:root[customtitlebar] .llm-follower-kind-link,
+:root[customtitlebar] .llm-standalone-unlinked-icon,
 :root[customtitlebar] .llm-follower-history,
 :root[customtitlebar] .llm-follower-more,
 :root[customtitlebar] .llm-standalone-side-panel-tab,

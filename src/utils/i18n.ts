@@ -1738,8 +1738,9 @@ const zhCN: Record<string, string> = {
   "Close HTML preview viewer": "关闭 HTML 预览查看器",
   "Preview stopped: the page tried to leave.":
     "预览已停止：该页面试图跳转离开。",
-  "Not linked to the PDF reader. Switching PDF tabs does not change this chat.":
-    "未与 PDF 阅读器关联。切换 PDF 标签页不会改变此对话。",
+  "This chat's context does not switch with the PDF reader tab in Zotero.":
+    "此对话的上下文不会随 Zotero 中的 PDF 阅读器标签页切换。",
+  "Show in library": "在文献库中显示",
   "Open in New Window": "在新窗口中打开",
   "Open in main window": "在主窗口中打开",
 };

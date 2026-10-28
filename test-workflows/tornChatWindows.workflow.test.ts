@@ -900,7 +900,11 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       );
       assert.equal(
         icon!.title,
-        "Not linked to the PDF reader. Switching PDF tabs does not change this chat.",
+        "This chat's context does not switch with the PDF reader tab in Zotero.",
+      );
+      assert.equal(
+        icon!.getAttribute("aria-label"),
+        "This chat's context does not switch with the PDF reader tab in Zotero.",
       );
       assert.equal(
         windowRoot(win)?.getAttribute("data-reader-link"),
@@ -1001,14 +1005,33 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
     assert.equal(history.title, "History");
 
-    // One row: window buttons, icon and title on the left; History, side
-    // panel, Open in main window and More on the right. The kind line is
-    // not in it: it sits under the row, at the top left of the chat.
+    // Top row: window buttons, icon and title only. Under its divider, a
+    // second row holds the kind line at the left and History, side panel,
+    // Open in main window and More at the right.
     const row = doc.querySelector(".llm-standalone-tab-row")!;
-    for (const node of [icon, title, history, sidePanel, openMain, more]) {
-      assert.isTrue(row.contains(node), `${node.className} is in the one row`);
+    for (const node of [icon, title]) {
+      assert.isTrue(row.contains(node), `${node.className} is in the top row`);
     }
-    assert.isFalse(row.contains(kindLine), "the kind line is under the row");
+    for (const node of [history, sidePanel, openMain, more, kindLine]) {
+      assert.isFalse(
+        row.contains(node),
+        `${node.className} is not in the top row`,
+      );
+    }
+    const kindRow = doc.querySelector(".llm-follower-kind-row")!;
+    for (const node of [kindLine, history, sidePanel, openMain, more]) {
+      assert.isTrue(
+        kindRow.contains(node),
+        `${node.className} is in the kind-line row`,
+      );
+    }
+    assert.equal(
+      (torn as any).getComputedStyle(title).fontWeight === "bold"
+        ? 700
+        : Number((torn as any).getComputedStyle(title).fontWeight),
+      600,
+      "the title is semi-bold",
+    );
     assert.isNull(
       doc.querySelector(".llm-standalone-content-title"),
       "the follower has no second header row",
@@ -1023,7 +1046,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.lengthOf(shownIn(torn, ".llm-standalone-nav-toggle"), 0);
     const left = (node: Element) => node.getBoundingClientRect().left;
     assert.isBelow(left(icon), left(title));
-    assert.isBelow(left(title), left(history));
+    assert.isBelow(left(kindLine), left(history));
     assert.isBelow(left(history), left(sidePanel));
     assert.isBelow(left(sidePanel), left(openMain));
     assert.isBelow(left(openMain), left(more));
@@ -1050,6 +1073,11 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       kindRect.left,
       title.getBoundingClientRect().left,
       "the kind line starts at the left, not under the title",
+    );
+    assert.isAtLeast(
+      history.getBoundingClientRect().top,
+      rowRect.bottom - 1,
+      "the actions are below the top row's divider",
     );
     // Task progress, Export and Delete have no button outside the menu.
     for (const selector of [
@@ -1365,9 +1393,13 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     });
     await expectLines("Torn W25 paper title", paperKind, "the paper chat");
     assert.equal(
-      kindLineOf(follower)!.title,
-      "Torn W25 A",
-      "the kind line's tooltip is the paper's full title",
+      (
+        kindLineOf(follower)!.querySelector(
+          ".llm-follower-kind-link",
+        ) as HTMLElement
+      ).title,
+      "Show in library: Torn W25 A",
+      "the kind line's tooltip names the action and the paper's full title",
     );
     assert.equal(
       kindLineOf(follower)!
@@ -1383,7 +1415,10 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       libraryKind,
       "after a switch to the library chat",
     );
-    assert.equal(kindLineOf(follower)!.title, "");
+    assert.isNull(
+      kindLineOf(follower)!.querySelector(".llm-follower-kind-link"),
+      "the library line is not a link",
+    );
     assert.equal(
       kindLineOf(follower)!
         .querySelector(".llm-follower-kind-icon")!
@@ -3283,6 +3318,86 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   });
 
   // ── W20 ──────────────────────────────────────────────────────────────────
+
+  it("W36: a paper chat's kind line shows its own paper in the library tab; a library chat's line does nothing", async function () {
+    const a = await newPaper("Torn W36 A");
+    const b = await newPaper("Torn W36 B");
+    const readerB = await openReader(b);
+    const paperChat = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W36 paper question",
+    });
+    const library = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W36 library question",
+    });
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: paperChat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    showReader(readerB);
+    await until(
+      () => mainWin().Zotero_Tabs.selectedID === readerB.tabID,
+      () => "reader B is the active tab",
+    );
+    const link = () =>
+      kindLineOf(follower)?.querySelector(
+        ".llm-follower-kind-link",
+      ) as HTMLButtonElement | null;
+    await until(
+      () => Boolean(link()),
+      () => "the paper line is a button",
+    );
+    assert.equal(link()!.tagName.toLowerCase(), "button");
+    link()!.click();
+    await until(
+      () =>
+        mainWin().Zotero_Tabs.selectedID === "zotero-pane" &&
+        mainWin().ZoteroPane.getSelectedItems(true)[0] === a.parentItemId,
+      () =>
+        `the library shows paper A: ${JSON.stringify({
+          tab: mainWin().Zotero_Tabs.selectedID,
+          items: mainWin().ZoteroPane.getSelectedItems(true),
+        })}`,
+    );
+
+    // A History switch to the library chat: the line is plain text.
+    showReader(readerB);
+    await until(
+      () => mainWin().Zotero_Tabs.selectedID === readerB.tabID,
+      () => "reader B is active again",
+    );
+    (await openFollowerHistory(follower, library.conversationKey)).click();
+    await until(
+      () => !link() && kindTextOf(follower).startsWith("Library chat"),
+      () => `the library chat shows: ${kindTextOf(follower)}`,
+    );
+    const before = {
+      tab: mainWin().Zotero_Tabs.selectedID,
+      items: mainWin().ZoteroPane.getSelectedItems(true),
+    };
+    (kindLineOf(follower) as HTMLElement).click();
+    (
+      kindLineOf(follower)!.querySelector(
+        ".llm-follower-kind-main",
+      ) as HTMLElement
+    ).click();
+    await Zotero.Promise.delay(500);
+    assert.deepEqual(
+      {
+        tab: mainWin().Zotero_Tabs.selectedID,
+        items: mainWin().ZoteroPane.getSelectedItems(true),
+      },
+      before,
+      "clicking a library chat's line changes nothing",
+    );
+    assert.isNull(kindLineOf(follower)!.querySelector("button"));
+  });
 
   it("W20: closing the sending window mid-stream still delivers the final answer to the other", async function () {
     const { key, standalone } = await setupTornOnA("Torn W20");
