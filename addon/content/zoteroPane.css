@@ -5286,6 +5286,17 @@
   margin-top: -20px;
 }
 
+/* The Stacked pane's section body pads the chat 8px on each side. The
+   independent pane has no such body, so give the chat box the same 8px
+   and its text sits as far from the edges as in the Stacked pane. */
+:root:not([data-llm-pane-view="stacked"])
+  .llm-dedicated-chat-pane
+  .llm-panel:not([data-standalone="true"])
+  .llm-chat-shell {
+  width: auto;
+  margin-inline: 8px;
+}
+
 .llm-chat-latest {
   appearance: none;
   -moz-appearance: none;
