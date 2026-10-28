@@ -11212,10 +11212,9 @@ label.llm-search-results-item:hover {
 }
 
 /* The header (language, source toggle) is replaced by the corner label and
- * the hover bar. */
-.llm-content-flat
-  .llm-codeblock-plain[data-flat-chrome="true"]
-  > .llm-codeblock-header {
+ * the hover bar. Hidden while streaming too (before the flat chrome is
+ * attached), or the header's "html" overlaps the corner "HTML". */
+.llm-content-flat .llm-codeblock-plain > .llm-codeblock-header {
   display: none;
 }
 
