@@ -33,7 +33,6 @@ import {
   getClaudeCodeModeEnabled,
   getLastUsedUpstreamGlobalConversationKey,
   getStandaloneSidebarWidthPref,
-  getStandaloneListPrefNames,
   getStandalonePinnedPapersPref,
   getStandaloneSidebarCollapsedGroupsPref,
   getStandaloneSidebarGroupOrderPref,
@@ -69,7 +68,9 @@ import {
 } from "./surfaceChoices";
 import {
   allocateTornSurface,
+  findTornWindowForConversation,
   registerTornChatWindow,
+  setTornWindowConversation,
   type TornChatIdentity,
 } from "./tornChatWindows";
 import {
@@ -240,7 +241,6 @@ import {
   getStandaloneSidebarSectionOptions,
   groupStandaloneSidebarEntries,
   moveStandaloneSidebarGroup,
-  serializeStandaloneSidebarSectionOptions,
   sortStandaloneSidebarEntries,
   type StandaloneSidebarGroupKey,
   type StandaloneSidebarSortOrder,
@@ -808,8 +808,10 @@ export function openStandaloneChat(options?: {
  * the standalone window document that keeps its own paper: it does not
  * follow the PDF reader, keeps its own selection and choices under a new
  * "torn:<id>" surface, and is not the singleton the standalone window is.
- * Returns null when the chat cannot be shown (its paper is gone, or its
- * runtime is off) or the window does not open.
+ * A chat has at most one such window: when one already shows the chat, it
+ * comes forward and is returned, and nothing opens. Returns null when the
+ * chat cannot be shown (its paper is gone, or its runtime is off) or the
+ * window does not open.
  */
 export function openTornChatWindow(
   identity: TornChatIdentity,
@@ -819,6 +821,12 @@ export function openTornChatWindow(
   if (!mainWin) return null;
   const conversationKey = Math.floor(Number(identity.conversationKey || 0));
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return null;
+  // One window per chat: the window that already shows it comes forward.
+  const holder = findTornWindowForConversation(conversationKey);
+  if (holder) {
+    bringChatWindowForward(holder);
+    return holder;
+  }
   const system = identity.system;
   if (
     (system === "codex" && !isCodexAppServerModeEnabled()) ||
@@ -901,7 +909,17 @@ export function openTornChatWindow(
     clearTornSurfaceChoices(surface);
     return null;
   }
+  // Recorded before the window loads, so a second open meanwhile finds it.
+  setTornWindowConversation(newWin, conversationKey);
   return newWin;
+}
+
+function bringChatWindowForward(win: Window): void {
+  try {
+    win.focus();
+  } catch {
+    // The window is going away.
+  }
 }
 
 type ChatWindowInstanceParams = {
@@ -998,7 +1016,6 @@ function openChatWindowInstance(
   let darkMQ: MediaQueryList | null = null;
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
-  let cleanupStandaloneListPrefObservers: (() => void) | null = null;
   let cleanupStandaloneTabFollow: (() => void) | null = null;
   let cleanupTornPaperWatch: (() => void) | null = null;
   // The module-level reader link this window set (the standalone window
@@ -1675,13 +1692,10 @@ function openChatWindowInstance(
       convCtxOpenInWindow.textContent = t("Open in New Window");
       convCtxMenu.append(convCtxOpenInWindow);
 
-      root.append(
-        lowerArea,
-        exportPopup,
-        skillOverlay,
-        skillCtxMenu,
-        convCtxMenu,
-      );
+      root.append(lowerArea, exportPopup, skillOverlay, skillCtxMenu);
+      // Its one item opens a torn-off window, which only the standalone
+      // window offers.
+      if (linkedToReader) root.append(convCtxMenu);
       cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
         newWin,
         contentArea,
@@ -1806,10 +1820,11 @@ function openChatWindowInstance(
       };
 
       // -----------------------------------------------------------------------
-      // Tear-off: drag a chat row (or the chat title) out of every window, or
-      // pick "Open in New Window" on a row, to open the chat in a torn-off
-      // window. Never for WebChat (its mode, rows and session chats) or for
-      // note chats.
+      // Tear-off: drag a chat row (or the chat title) out of the standalone
+      // window, or pick "Open in New Window" on a row, to open the chat in a
+      // torn-off window. Only the standalone window is a source: a torn-off
+      // window never opens another. Never for WebChat (its mode, rows and
+      // session chats) or for note chats.
       // -----------------------------------------------------------------------
       const tearOffIdentityFor = (candidate: {
         system: ConversationSystem;
@@ -1818,6 +1833,7 @@ function openChatWindowInstance(
         libraryID: number;
         paperItemID?: number;
       }): TornChatIdentity | null => {
+        if (!linkedToReader) return null;
         if (cancelled || newWin.closed || isInWebChatMode) return null;
         // A note session lists and shows the note's own chats.
         if (resolveActiveNoteSession(activeItem)) return null;
@@ -1980,6 +1996,8 @@ function openChatWindowInstance(
         });
       };
 
+      // A torn-off window's title is never draggable, so on macOS it stays
+      // part of the top row that moves the window.
       const syncTitleTearOff = () => {
         if (tearOffIdentityForTitle()) {
           contentTitleText.setAttribute("draggable", "true");
@@ -1987,7 +2005,9 @@ function openChatWindowInstance(
           contentTitleText.removeAttribute("draggable");
         }
       };
-      installTearOffDragSource(contentTitleText, tearOffIdentityForTitle);
+      if (linkedToReader) {
+        installTearOffDragSource(contentTitleText, tearOffIdentityForTitle);
+      }
 
       let convCtxEntry: SidebarConv | null = null;
       const hideConvCtxMenu = () => {
@@ -2410,6 +2430,9 @@ function openChatWindowInstance(
 
       const updateContentTitle = () => {
         if (!linkedToReader) {
+          // Every switch in a torn-off window passes here (mount, in-place
+          // switch, the panel's own switch), so the registry follows it.
+          setTornWindowConversation(newWin, activeConversationKey);
           syncFollowerTitle();
         } else if (standaloneMode === "paper" && currentBasePaperItem) {
           try {
@@ -2893,15 +2916,12 @@ function openChatWindowInstance(
 
       // Agent / Codex / Claude sections: their order, which are folded, each
       // one's own sort and dates, and the list last drawn (so a change
-      // redraws without a reload). The first three are this window's copies
-      // of prefs that every chat window shares: a change reads the pref,
-      // applies only itself, and writes it back, so it never undoes a change
-      // made in another window.
+      // redraws without a reload).
       let sidebarGroupOrder = getStandaloneSidebarGroupOrderPref();
-      let sidebarCollapsedGroups = new Set(
+      const sidebarCollapsedGroups = new Set(
         getStandaloneSidebarCollapsedGroupsPref(),
       );
-      let sidebarSectionOptions = getStandaloneSidebarSectionOptionsPref();
+      const sidebarSectionOptions = getStandaloneSidebarSectionOptionsPref();
       let lastSidebarConversations: SidebarConv[] | null = null;
       // The section whose sort button opened the shared sort menu.
       let sidebarSortMenuKey: StandaloneSidebarGroupKey | null = null;
@@ -2979,18 +2999,16 @@ function openChatWindowInstance(
           ".llm-standalone-history-sort-item",
         ) as HTMLButtonElement | null;
         if (!item || !key) return;
-        const savedOptions = getStandaloneSidebarSectionOptionsPref();
         const options = {
-          ...getStandaloneSidebarSectionOptions(savedOptions, key),
+          ...getStandaloneSidebarSectionOptions(sidebarSectionOptions, key),
         };
         if (item.dataset.sortOrder) {
           options.sort = item.dataset.sortOrder as StandaloneSidebarSortOrder;
         } else if (item.dataset.sortToggle === "dates") {
           options.showDates = !options.showDates;
         }
-        savedOptions.set(key, options);
-        sidebarSectionOptions = savedOptions;
-        setStandaloneSidebarSectionOptionsPref(savedOptions);
+        sidebarSectionOptions.set(key, options);
+        setStandaloneSidebarSectionOptionsPref(sidebarSectionOptions);
         if (item.dataset.sortOrder) {
           redrawSidebarSections();
           sidebarSortButtonFor(key)?.focus();
@@ -3037,11 +3055,11 @@ function openChatWindowInstance(
       // at the end sets its order, and dragging a label (or Alt+Up/Down)
       // moves the section.
       const toggleSidebarGroup = (key: StandaloneSidebarGroupKey) => {
-        const collapsed = new Set(getStandaloneSidebarCollapsedGroupsPref());
-        if (collapsed.has(key)) collapsed.delete(key);
-        else collapsed.add(key);
-        sidebarCollapsedGroups = collapsed;
-        setStandaloneSidebarCollapsedGroupsPref(Array.from(collapsed));
+        if (sidebarCollapsedGroups.has(key)) sidebarCollapsedGroups.delete(key);
+        else sidebarCollapsedGroups.add(key);
+        setStandaloneSidebarCollapsedGroupsPref(
+          Array.from(sidebarCollapsedGroups),
+        );
         redrawSidebarSections(key);
       };
       // A section's "+": a new chat in the window's own mode works like the
@@ -3134,7 +3152,7 @@ function openChatWindowInstance(
             (el) => (el as HTMLElement).dataset.groupKey,
           ) as StandaloneSidebarGroupKey[];
           sidebarGroupOrder = moveStandaloneSidebarGroup(
-            getStandaloneSidebarGroupOrderPref(),
+            sidebarGroupOrder,
             key as StandaloneSidebarGroupKey,
             toIndex,
             visible,
@@ -3143,27 +3161,6 @@ function openChatWindowInstance(
           redrawSidebarSections(key as StandaloneSidebarGroupKey);
         },
       });
-      // Takes the sections' order, folds and sort options from the prefs
-      // after another window changed them; redraws only on a real change,
-      // so this window's own writes (copied before writing) draw nothing.
-      const refreshSidebarSectionPrefs = () => {
-        const order = getStandaloneSidebarGroupOrderPref();
-        const collapsed = new Set(getStandaloneSidebarCollapsedGroupsPref());
-        const options = getStandaloneSidebarSectionOptionsPref();
-        const sameCollapsed =
-          collapsed.size === sidebarCollapsedGroups.size &&
-          Array.from(collapsed).every((key) => sidebarCollapsedGroups.has(key));
-        const changed =
-          order.join(",") !== sidebarGroupOrder.join(",") ||
-          !sameCollapsed ||
-          serializeStandaloneSidebarSectionOptions(options) !==
-            serializeStandaloneSidebarSectionOptions(sidebarSectionOptions);
-        if (!changed) return;
-        sidebarGroupOrder = order;
-        sidebarCollapsedGroups = collapsed;
-        sidebarSectionOptions = options;
-        redrawSidebarSections();
-      };
 
       const renderSidebarItems = (conversations: SidebarConv[]) => {
         setSidebarSortMenuOpen(false);
@@ -3598,9 +3595,24 @@ function openChatWindowInstance(
         }
       };
 
+      // One window per chat: in a torn-off window, picking a chat another
+      // torn-off window shows brings that window forward, and this one stays
+      // as it is. True when it did.
+      const bringForwardOtherTornWindow = (
+        conversationKey: number,
+      ): boolean => {
+        if (linkedToReader) return false;
+        const holder = findTornWindowForConversation(conversationKey);
+        if (!holder || holder === newWin) return false;
+        bringChatWindowForward(holder);
+        return true;
+      };
+
       const selectStandaloneSearchEntry = async (
         entry: ConversationHistoryEntry,
       ): Promise<boolean> => {
+        // This window did not switch (the side panel keeps its tab).
+        if (bringForwardOtherTornWindow(entry.conversationKey)) return false;
         // A row of another runtime opens in that runtime: the window adopts
         // it (leaving WebChat first) right before it mounts the row's chat.
         // The sidebar's runtime stays as it is.
@@ -3794,7 +3806,11 @@ function openChatWindowInstance(
       const searchPopupController = createHistorySearchPopupController({
         ...standaloneHistoryListSources,
         parent: root,
-        onSelect: selectStandaloneSearchEntry,
+        // Another window taking the chat also answers the pick: the popup
+        // closes.
+        onSelect: (entry) =>
+          bringForwardOtherTornWindow(entry.conversationKey) ||
+          selectStandaloneSearchEntry(entry),
         onDelete: async (entry) => {
           await queueStandaloneHistoryDeletion(
             toStandaloneDeletionEntry(entry),
@@ -5842,8 +5858,6 @@ function openChatWindowInstance(
       }
 
       // -- Pinned papers ------------------------------------------------------
-      // The window's copy first, then the shared pref, so the pref observer
-      // below finds nothing new and this window does not draw twice.
       const savePinnedPapers = (ids: number[]) => {
         pinnedPaperIDs = ids;
         setStandalonePinnedPapersPref(ids);
@@ -5853,11 +5867,7 @@ function openChatWindowInstance(
         return item && !(item as any).deleted ? item : null;
       };
       const togglePin = (paperID: number) => {
-        // From the pref, not this window's copy: another window may have
-        // pinned or unpinned a paper since.
-        savePinnedPapers(
-          togglePinnedPaper(getStandalonePinnedPapersPref(), paperID),
-        );
+        savePinnedPapers(togglePinnedPaper(pinnedPaperIDs, paperID));
         if (!pinnedPaperIDs.includes(paperID)) {
           readyPinnedPaperIDs.delete(paperID);
         }
@@ -6012,7 +6022,7 @@ function openChatWindowInstance(
         sidebarView.pinnedList.hidden = pinnedCollapsed;
       };
       const togglePinnedFold = () => {
-        pinnedCollapsed = !getStandaloneSidebarPinnedCollapsedPref();
+        pinnedCollapsed = !pinnedCollapsed;
         setStandaloneSidebarPinnedCollapsedPref(pinnedCollapsed);
         syncPinnedFold();
       };
@@ -6087,67 +6097,6 @@ function openChatWindowInstance(
       );
       renderPinnedPapers();
 
-      // -- List prefs shared by every chat window ------------------------------
-      // A change another window made to the pinned papers or the sections
-      // reaches this window through its pref: refresh the copies and redraw
-      // once, after the change settles.
-      {
-        let refreshQueued = false;
-        const refreshListPrefs = () => {
-          refreshQueued = false;
-          if (cancelled || newWin.closed) return;
-          const pinned = getStandalonePinnedPapersPref();
-          if (pinned.join(",") !== pinnedPaperIDs.join(",")) {
-            pinnedPaperIDs = pinned;
-            for (const paperID of Array.from(readyPinnedPaperIDs)) {
-              if (!pinned.includes(paperID))
-                readyPinnedPaperIDs.delete(paperID);
-            }
-            syncPinButton();
-            renderPinnedPapers();
-          }
-          const folded = getStandaloneSidebarPinnedCollapsedPref();
-          if (folded !== pinnedCollapsed) {
-            pinnedCollapsed = folded;
-            syncPinnedFold();
-          }
-          refreshSidebarSectionPrefs();
-        };
-        const observerIds: symbol[] = [];
-        const unregister = () => {
-          for (const observerId of observerIds.splice(0)) {
-            try {
-              (Zotero as any).Prefs.unregisterObserver(observerId);
-            } catch {
-              void 0;
-            }
-          }
-        };
-        cleanupStandaloneListPrefObservers = unregister;
-        const onListPrefChange = () => {
-          if (cancelled || newWin.closed) {
-            unregister();
-            return;
-          }
-          if (refreshQueued) return;
-          refreshQueued = true;
-          newWin.setTimeout(refreshListPrefs, 0);
-        };
-        try {
-          for (const prefName of getStandaloneListPrefNames()) {
-            observerIds.push(
-              (Zotero as any).Prefs.registerObserver(
-                prefName,
-                onListPrefChange,
-                true,
-              ),
-            );
-          }
-        } catch {
-          void 0;
-        }
-      }
-
       // Initial mount preserves the current paper/library conversation. The
       // only automatic blank draft is created once during Zotero startup.
       appLogger.debug(
@@ -6202,8 +6151,6 @@ function openChatWindowInstance(
     unsubscribeStandalonePendingDeletions?.();
     unsubscribeStandalonePendingDeletions = null;
     cleanupStandalonePrefObserver?.();
-    cleanupStandaloneListPrefObservers?.();
-    cleanupStandaloneListPrefObservers = null;
     cleanupStandaloneTabFollow?.();
     cleanupStandaloneTabFollow = null;
     cleanupTornPaperWatch?.();

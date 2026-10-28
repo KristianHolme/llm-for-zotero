@@ -612,21 +612,6 @@ export function setStandaloneSidebarWidthPref(value: number): void {
   );
 }
 
-/**
- * The full names of the prefs that every open chat window's lists share
- * (pinned papers, the "Pinned" fold, and the sections' order, folds and
- * sort options), for a window to observe changes made in another window.
- */
-export function getStandaloneListPrefNames(): string[] {
-  return [
-    STANDALONE_PINNED_PAPERS_PREF_KEY,
-    STANDALONE_SIDEBAR_PINNED_COLLAPSED_PREF_KEY,
-    STANDALONE_SIDEBAR_GROUP_ORDER_PREF_KEY,
-    STANDALONE_SIDEBAR_COLLAPSED_GROUPS_PREF_KEY,
-    STANDALONE_SIDEBAR_SECTION_OPTIONS_PREF_KEY,
-  ].map((key) => `${config.prefsPrefix}.${key}`);
-}
-
 /** The standalone window's pinned papers (item IDs), oldest first. */
 export function getStandalonePinnedPapersPref(): number[] {
   return parsePinnedPaperIDs(

@@ -1578,6 +1578,293 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.lengthOf(api.getTornChatWindowsForTest(), 0);
   });
 
+  // ── One window per chat; followers are never sources ─────────────────────
+
+  /** Counts `win.focus()` calls until restored. */
+  function spyOnFocus(win: Window): {
+    count: () => number;
+    restore: () => void;
+  } {
+    const original = win.focus;
+    let calls = 0;
+    (win as any).focus = function (this: unknown, ...args: unknown[]) {
+      calls += 1;
+      return (original as any).apply(win, args);
+    };
+    return {
+      count: () => calls,
+      restore: () => {
+        delete (win as any).focus;
+      },
+    };
+  }
+
+  /** Opens a follower on a stored chat; returns the window that holds it. */
+  async function openAnotherFollower(identity: {
+    system: "upstream" | "codex" | "claude_code";
+    conversationKey: number;
+    kind: "global" | "paper";
+    paperItemID?: number;
+  }): Promise<Window> {
+    const before = api.getTornChatWindowsForTest();
+    await api.openTornChatWindowForTest({
+      ...identity,
+      libraryID: Number(Zotero.Libraries.userLibraryID),
+    });
+    const opened = api
+      .getTornChatWindowsForTest()
+      .find((win) => !before.includes(win));
+    assert.isOk(opened, `a new follower opens on ${identity.conversationKey}`);
+    await until(
+      () => stateOf(opened!).conversationKey === identity.conversationKey,
+      () =>
+        `the new follower shows chat ${identity.conversationKey}: ${JSON.stringify(stateOf(opened!))}`,
+    );
+    return opened!;
+  }
+
+  // ── W26 ──────────────────────────────────────────────────────────────────
+
+  it("W26: opening a chat a follower holds brings that follower forward and opens nothing", async function () {
+    const { a, key, standalone } = await setupStandaloneOnA("Torn W26");
+    const clickOpenInNewWindow = () => {
+      openRowMenu(standalone, rowOf(standalone, key)!);
+      assert.isTrue(isConvMenuShown(standalone), "the row menu opens");
+      (
+        convMenuOf(standalone)!.querySelector(
+          '[data-action="open-in-new-window"]',
+        ) as HTMLButtonElement
+      ).click();
+    };
+    clickOpenInNewWindow();
+    await until(
+      () =>
+        api.getTornChatWindowsForTest().length === 1 &&
+        stateOf(tornWin()).conversationKey === key,
+      () =>
+        `one follower opens on chat ${key}: ${JSON.stringify(stateOf(tornWin()))}`,
+      15_000,
+    );
+    const follower = tornWin()!;
+    const focus = spyOnFocus(follower);
+    try {
+      // The row menu again.
+      clickOpenInNewWindow();
+      await until(
+        () => focus.count() === 1,
+        () => `the follower comes forward: ${focus.count()} focus calls`,
+      );
+      await Zotero.Promise.delay(500);
+      assert.lengthOf(
+        api.getTornChatWindowsForTest(),
+        1,
+        "the menu opened no second follower",
+      );
+
+      // The open function every follower path uses (drag, menu, tests).
+      const opened = await api.openTornChatWindowForTest({
+        system: "upstream",
+        conversationKey: key,
+        kind: "paper",
+        libraryID: Number(Zotero.Libraries.userLibraryID),
+        paperItemID: a.parentItemId,
+      });
+      assert.equal(focus.count(), 2, "the follower comes forward again");
+      assert.equal(
+        opened.surface,
+        bodyOf(follower)?.dataset.selectionSurface,
+        "the open function hands back the follower that holds the chat",
+      );
+      await Zotero.Promise.delay(500);
+      assert.lengthOf(
+        api.getTornChatWindowsForTest(),
+        1,
+        "the open function opened no second follower",
+      );
+      assert.isTrue(tornWin() === follower, "the same follower stays open");
+      assertTornOnA("after both opens", { key, paperId: a.parentItemId });
+      assert.equal(
+        stateOf(standalone).conversationKey,
+        key,
+        "the leader still shows the chat too",
+      );
+    } finally {
+      focus.restore();
+    }
+  });
+
+  // ── W27 ──────────────────────────────────────────────────────────────────
+
+  it("W27: History in one follower picking the chat another follower holds brings that one forward and leaves the first unchanged", async function () {
+    const a = await newPaper("Torn W27 A");
+    const libraryChat = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W27 library question",
+    });
+    const paperChat = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W27 paper question",
+    });
+    const otherChat = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W27 other library question",
+    });
+    const followerA = await openAnotherFollower({
+      system: "upstream",
+      conversationKey: libraryChat.conversationKey,
+      kind: "global",
+    });
+    const followerB = await openAnotherFollower({
+      system: "upstream",
+      conversationKey: paperChat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    const focusA = spyOnFocus(followerA);
+    const focusB = spyOnFocus(followerB);
+    try {
+      (await openFollowerHistory(followerA, paperChat.conversationKey)).click();
+      await until(
+        () => focusB.count() === 1,
+        () => `follower B comes forward: ${focusB.count()} focus calls`,
+      );
+      await Zotero.Promise.delay(500);
+      assert.equal(
+        searchOverlayOf(followerA)?.style.display,
+        "none",
+        "follower A's History closes",
+      );
+      const stateA = stateOf(followerA);
+      assert.equal(
+        stateA.conversationKey,
+        libraryChat.conversationKey,
+        `follower A keeps its chat: ${JSON.stringify(stateA)}`,
+      );
+      assert.equal(stateA.conversationKind, "global", JSON.stringify(stateA));
+      assert.equal(
+        stateOf(followerB).conversationKey,
+        paperChat.conversationKey,
+        "follower B keeps its chat",
+      );
+      assert.equal(focusA.count(), 0, "follower A is not brought forward");
+      assert.lengthOf(api.getTornChatWindowsForTest(), 2);
+    } finally {
+      focusA.restore();
+      focusB.restore();
+    }
+
+    // A moves to a third chat in place; the chat it left is free again, so
+    // opening it opens a new follower.
+    (await openFollowerHistory(followerA, otherChat.conversationKey)).click();
+    await until(
+      () => stateOf(followerA).conversationKey === otherChat.conversationKey,
+      () =>
+        `follower A switches to chat ${otherChat.conversationKey}: ${JSON.stringify(stateOf(followerA))}`,
+    );
+    const followerC = await openAnotherFollower({
+      system: "upstream",
+      conversationKey: libraryChat.conversationKey,
+      kind: "global",
+    });
+    assert.isTrue(followerC !== followerA, "a new follower holds the old chat");
+    assert.lengthOf(api.getTornChatWindowsForTest(), 3);
+  });
+
+  // ── W28 ──────────────────────────────────────────────────────────────────
+
+  it("W28: a follower's title is no drag source and the follower has no Open in New Window item", async function () {
+    const a = await newPaper("Torn W28 A");
+    const paperChat = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W28 paper question",
+    });
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: paperChat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    const title = followerTitleOf(follower)!;
+    assert.isOk(title, "the follower has a title");
+    assert.isNull(
+      title.getAttribute("draggable"),
+      "the follower's title is not draggable",
+    );
+    assert.deepEqual(
+      Array.from(follower.document.querySelectorAll('[draggable="true"]')).map(
+        (node) => (node as HTMLElement).className,
+      ),
+      [],
+      "nothing in the follower is a drag source",
+    );
+    if (follower.document.documentElement!.hasAttribute("customtitlebar")) {
+      // The title is not cut out of the top row's window-move area
+      // ("default" leaves the row's "drag" in effect).
+      assert.notEqual(
+        follower
+          .getComputedStyle(title)!
+          .getPropertyValue("-moz-window-dragging"),
+        "no-drag",
+        "dragging the title moves the window",
+      );
+      const topRow = title.closest(".llm-standalone-tab-row");
+      assert.isOk(topRow, "the title is in the top row");
+      assert.equal(
+        follower
+          .getComputedStyle(topRow!)!
+          .getPropertyValue("-moz-window-dragging"),
+        "drag",
+        "the top row moves the window",
+      );
+    }
+    const transfer = startDrag(follower, title);
+    assert.notInclude(
+      Array.from(transfer.types),
+      TEAR_OFF_MIME,
+      "a drag on the title carries no chat",
+    );
+    endDrag(follower, title, transfer, pointOutsideEveryWindow());
+    assert.isNull(
+      follower.document.querySelector(".llm-standalone-conv-ctx-menu"),
+      "the follower has no row menu",
+    );
+    assert.isNull(
+      follower.document.querySelector('[data-action="open-in-new-window"]'),
+      "the follower has no Open in New Window item",
+    );
+    // Right-clicking a History row offers nothing either.
+    const historyRow = await openFollowerHistory(
+      follower,
+      paperChat.conversationKey,
+    );
+    const rect = historyRow.getBoundingClientRect();
+    historyRow.dispatchEvent(
+      new (follower as any).MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: rect.left + 10,
+        clientY: rect.top + rect.height / 2,
+      }),
+    );
+    assert.isNull(
+      follower.document.querySelector('[data-action="open-in-new-window"]'),
+      "a History row has no Open in New Window item",
+    );
+    await Zotero.Promise.delay(500);
+    assert.lengthOf(
+      api.getTornChatWindowsForTest(),
+      1,
+      "no second follower opened",
+    );
+  });
+
   // ── W15 ──────────────────────────────────────────────────────────────────
 
   it("W15: with only torn-off windows open, Open in Window opens the standalone window", async function () {
