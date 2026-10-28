@@ -1314,15 +1314,17 @@ function createTaskCitedFold(
  * A library paper's part of one question's answer: "Cited", one block per
  * passage the answer cites (its number as the answer's mark shows it) and
  * per sentence that only names the paper, then the reads it did not cite,
- * folded. Nothing when there is nothing to list.
+ * folded. Nothing when there is nothing to list. Without `heading` the
+ * "Cited" line is left out, for a card whose own header already says it.
  */
 export function createTaskCitedBlocks(
   doc: Document,
   model: TaskCitedModel,
   handlers: TaskCitedHandlers,
+  options: { heading?: boolean } = {},
 ): HTMLElement[] {
   const children: HTMLElement[] = [];
-  if (model.cited.length || model.named.length)
+  if (options.heading !== false && (model.cited.length || model.named.length))
     children.push(el(doc, "div", "llm-task-paper-turn", t("Cited")));
   for (const passage of model.cited) {
     children.push(

@@ -1522,11 +1522,10 @@ describe("task progress view", function () {
     );
     const go = first.findByClass("llm-task-paper-open")!;
     assert.equal(go.textContent, "Go to Question 1");
-    assert.deepEqual(
-      list
-        .findAllByClass("llm-task-paper-turn")
-        .map((heading) => heading.textContent),
-      ["Cited"],
+    assert.lengthOf(
+      list.findAllByClass("llm-task-paper-turn"),
+      0,
+      "the card's header already says Cited",
     );
     assert.lengthOf(list.findAllByClass("llm-task-cited-number"), 1);
     // Question 1's reads, the one cited now left out.
