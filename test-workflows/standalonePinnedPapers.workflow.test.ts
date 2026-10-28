@@ -15,8 +15,8 @@ import {
 
 /**
  * The standalone window's side panel belongs to the chat shown: Library chat
- * has its own panel and no pin, and switching back to Paper chat brings the
- * paper's side chat back on its own key.
+ * keeps the panel open on its own New tab page and has no pin, and switching
+ * back to Paper chat brings the paper's side chat back on its own key.
  *
  * Everything runs in the real window; sends go through the real composers
  * and send flow, and only the network is scripted (a held fake provider).
@@ -159,7 +159,11 @@ describe("workflow: standalone pinned papers", function () {
     const paperSideKey = side.sideChat!.conversationKey;
 
     await api.clickStandaloneTab("open");
-    side = await waitForSide((state) => !state.open, "Library chat: closed");
+    side = await waitForSide(
+      (state) =>
+        state.open && state.view === "newtab" && state.tabs.length === 0,
+      "Library chat: the panel stays open on its own New tab page",
+    );
     const pins = await api.listStandalonePinnedPapers();
     assert.isFalse(pins.pinButton.visible, "Library chat has no pin");
 

@@ -1,8 +1,8 @@
 /**
  * In a paper chat, the chat's own paper leaves "In your library" for its own
- * "Cited" card; a paper added beside it stays a library row. Both list
- * "Cited": one block per passage the answer cites (numbered as the answer's
- * marks; a passage only quoted as a card has no number), one per sentence
+ * "Cited" card; a paper added beside it stays a library row under its own
+ * "Cited" line. Both list one block per passage the answer cites (numbered
+ * as the answer's marks; a passage only quoted as a card has no number), one per sentence
  * that only names the paper, and the reads it did not cite folded under
  * "Read, not cited (n)" (never a read whose words are only its heading).
  * Each block's "Show in answer" lights, for a real mouse click, every
@@ -456,7 +456,9 @@ describe("workflow: task progress library paper in the answer", function () {
       const ok =
         !structure.ownRowListed &&
         (entry.title !== TITLE_A || structure.cardCounts === "2") &&
-        JSON.stringify(structure.headings) === JSON.stringify(["Cited"]) &&
+        // The Cited card's header already says Cited; a library row says it.
+        JSON.stringify(structure.headings) ===
+          JSON.stringify(entry.title === TITLE_A ? [] : ["Cited"]) &&
         JSON.stringify(blocks.map((block) => block.words)) ===
           JSON.stringify(structure.expected) &&
         // A cited passage shows its marks' number; a card's, none.
