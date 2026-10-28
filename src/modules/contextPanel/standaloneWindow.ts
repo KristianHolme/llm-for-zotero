@@ -10,6 +10,7 @@ import {
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeGlobalConversationByLibrary,
+  clearSelectedReasoningForSurface,
   selectedRuntimeModeCache,
 } from "./state";
 import {
@@ -797,6 +798,33 @@ function takePendingLeaderConversation(): typeof pendingLeaderConversation {
   return pending;
 }
 
+// How long a request waits for the standalone window to load.
+const PENDING_LEADER_TIMEOUT_MS = 30_000;
+const PENDING_LEADER_POLL_MS = 250;
+
+/**
+ * Settles `pending` false if the standalone window it waits for closes
+ * before it loads (its initWindow and cleanupWindow then never run), or
+ * does not load in time. Such a window also leaves the pending flag set:
+ * clear it, since no window is opening any more.
+ */
+function watchPendingLeaderConversation(
+  pending: NonNullable<typeof pendingLeaderConversation>,
+): void {
+  const deadline = Date.now() + PENDING_LEADER_TIMEOUT_MS;
+  const check = () => {
+    if (pendingLeaderConversation !== pending) return;
+    const opening = getStandaloneSessionWindow();
+    if (opening && Date.now() < deadline) {
+      void Zotero.Promise.delay(PENDING_LEADER_POLL_MS).then(check);
+      return;
+    }
+    if (!opening) setStandalonePending(false);
+    takePendingLeaderConversation()?.settle(false);
+  };
+  void Zotero.Promise.delay(PENDING_LEADER_POLL_MS).then(check);
+}
+
 /**
  * "Open in main window": shows a follower's chat in the standalone window,
  * opening it first when it is closed, and brings it forward. Resolves true
@@ -842,28 +870,36 @@ export function openConversationInLeader(
             : createGlobalPortalItem(libraryID, identity.conversationKey)
       ) as Zotero.Item;
     }
-    pendingLeaderConversation = { identity, settle: resolve };
+    const pending = { identity, settle: resolve };
+    pendingLeaderConversation = pending;
     // A window still opening shows the chat once its initWindow has run.
-    if (isStandaloneWindowActive()) return;
-    openStandaloneChat({
-      initialItem,
-      initialConversationSystem: identity.system,
-    });
-    if (!isStandaloneWindowActive()) {
-      takePendingLeaderConversation()?.settle(false);
+    if (!leader) {
+      openStandaloneChat({
+        initialItem,
+        initialConversationSystem: identity.system,
+      });
     }
+    if (!getStandaloneSessionWindow()) {
+      takePendingLeaderConversation()?.settle(false);
+      return;
+    }
+    watchPendingLeaderConversation(pending);
   });
 }
 
 /**
- * Open a torn-off chat window on one conversation. It is another instance of
- * the standalone window document that keeps its own paper: it does not
- * follow the PDF reader, keeps its own selection and choices under a new
- * "torn:<id>" surface, and is not the singleton the standalone window is.
- * A chat has at most one such window: when one already shows the chat, it
- * comes forward and is returned, and nothing opens. Returns null when the
- * chat cannot be shown (its paper is gone, or its runtime is off) or the
- * window does not open.
+ * Open a follower window on one chat. It is another instance of the
+ * standalone window document, in its compact follower layout: it holds that
+ * chat (History, or its side panel's Open as main chat, loads another), does
+ * not follow the PDF reader or Zotero's selection, and is not the singleton
+ * the standalone window (the leader) is. Its surface "torn:<id>" starts from
+ * the leader's model and runtime choices and keeps its own from then on.
+ * A remembered-chat read it has no slot for falls back to the leader's
+ * slots, then the sidebar's (conversationSelection.ts), so a follower
+ * resolves a chat it was not given as the leader would. A chat has at most
+ * one follower: when one already shows the chat, it comes forward and is
+ * returned, and nothing opens. Returns null when the chat cannot be shown
+ * (its paper is gone, or its runtime is off) or the window does not open.
  */
 export function openTornChatWindow(
   identity: TornChatIdentity,
@@ -3515,10 +3551,41 @@ function openChatWindowInstance(
         }
       };
 
+      // A follower has no chat list. It only makes sure the chat it shows
+      // has a catalog entry, as the list's render does, once per chat.
+      let followerSeededConversationKey = 0;
+      const seedFollowerConversation = async () => {
+        const key = activeConversationKey;
+        if (key <= 0 || key === followerSeededConversationKey) return;
+        followerSeededConversationKey = key;
+        try {
+          if (standaloneMode === "open") {
+            await ensureActiveConversationCatalogEntry({
+              conversationKey: key,
+              libraryID: getCurrentLibraryScopeID(),
+              kind: "global",
+            });
+          } else if (currentBasePaperItem) {
+            await ensureActiveConversationCatalogEntry({
+              conversationKey: key,
+              libraryID: Number(currentBasePaperItem.libraryID || libraryID),
+              kind: "paper",
+              paperItemID: Number(currentBasePaperItem.id || 0),
+            });
+          }
+        } catch (err) {
+          appLogger.warn("LLM: follower catalog seed failed", err);
+        }
+      };
+
       const renderSidebar = async () => {
         if (cancelled) return;
         // In webchat mode, sidebar is managed by renderWebChatSidebar() — skip local rendering
         if (isInWebChatMode) return;
+        if (!linkedToReader) {
+          await seedFollowerConversation();
+          return;
+        }
         appLogger.debug(
           "LLM: standalone renderSidebar",
           "mode=" + standaloneMode,
@@ -3854,10 +3921,22 @@ function openChatWindowInstance(
         }
         // The open claims its sequence number once every refusal check has
         // passed, before its first await, so a refused click never cancels an
-        // earlier open and a later click always wins over this one.
+        // earlier open and a later click always wins over this one. A
+        // follower claims the chat in the registry then too, so an open of
+        // the chat elsewhere meanwhile finds this window (one window per
+        // chat); an open that fails gives the claim back, unless a later
+        // open has made its own.
         let openSeq = 0;
         const claimOpen = () => {
           openSeq = ++standaloneHistoryOpenSeq;
+          if (!linkedToReader) {
+            setTornWindowConversation(newWin, entry.conversationKey);
+          }
+        };
+        const releaseClaim = () => {
+          if (!linkedToReader && openSeq === standaloneHistoryOpenSeq) {
+            setTornWindowConversation(newWin, activeConversationKey);
+          }
         };
         const isNewestOpen = () =>
           openSeq === standaloneHistoryOpenSeq && !cancelled && !newWin.closed;
@@ -3975,7 +4054,10 @@ function openChatWindowInstance(
               await showStandaloneConversation(portalItem, paperItem);
               mounted = true;
             } finally {
-              if (!mounted) targetModeSnapshot.restore();
+              if (!mounted) {
+                targetModeSnapshot.restore();
+                releaseClaim();
+              }
             }
           } else {
             const portalItem = buildStandalonePortalItem({
@@ -4002,7 +4084,10 @@ function openChatWindowInstance(
               await showStandaloneConversation(portalItem);
               mounted = true;
             } finally {
-              if (!mounted) targetModeSnapshot.restore();
+              if (!mounted) {
+                targetModeSnapshot.restore();
+                releaseClaim();
+              }
             }
           }
           return true;
@@ -4839,10 +4924,12 @@ function openChatWindowInstance(
               : null,
           surrendered: standaloneSurrenderedDeletions.has(entry.id),
           dropped: Boolean(event.dropped),
+          holdsOneChat: !linkedToReader,
         });
-        if (action.type === "leave" && !linkedToReader) {
-          // A torn-off window holds one chat: it closes with it, and never
-          // falls back to another chat (which another window may hold).
+        if (action.type === "close") {
+          // A follower holds one chat: it keeps it, with its panel's Undo,
+          // while Undo is possible, and closes once the deletion is final. It
+          // never falls back to another chat (which another window may hold).
           newWin.close();
           return;
         }
@@ -5687,6 +5774,21 @@ function openChatWindowInstance(
           codexObserverId = undefined;
         };
         cleanupStandalonePrefObserver = unregister;
+        // The runtime of the chat on screen was turned off. The leader moves
+        // to the Agent runtime; a follower holds one chat, so it closes rather
+        // than show another chat (which another window may hold). It closes
+        // after this pref notification: closing unregisters its observers,
+        // and doing that while Zotero walks the observer list skips the next
+        // window's.
+        const leaveTurnedOffRuntime = () => {
+          if (!linkedToReader) {
+            newWin.setTimeout(() => {
+              if (!newWin.closed) newWin.close();
+            }, 0);
+            return;
+          }
+          void switchConversationSystem("upstream");
+        };
         const onClaudeModePrefChange = () => {
           if (cancelled || newWin.closed) {
             unregister();
@@ -5706,7 +5808,7 @@ function openChatWindowInstance(
               });
             demoteConversationSystemOnEverySurface("claude_code");
             if (isClaudeConversationSystem()) {
-              void switchConversationSystem("upstream");
+              leaveTurnedOffRuntime();
               return;
             }
           }
@@ -5720,7 +5822,7 @@ function openChatWindowInstance(
           if (!isCodexAppServerModeEnabled()) {
             demoteConversationSystemOnEverySurface("codex");
             if (isCodexConversationSystem()) {
-              void switchConversationSystem("upstream");
+              leaveTurnedOffRuntime();
               return;
             }
           }
@@ -6222,7 +6324,8 @@ function openChatWindowInstance(
         return true;
       };
       renderPinnedPapers = () => {
-        if (cancelled) return;
+        // A follower has no Pinned list.
+        if (cancelled || !linkedToReader) return;
         const list = sidebarView.pinnedList;
         list.replaceChildren();
         const shownPaperID =
@@ -6363,7 +6466,7 @@ function openChatWindowInstance(
       // A pinned paper's dot follows its main chat's answer.
       disposePinnedPaperActivity = subscribeRequestActivity(
         (conversationKey) => {
-          if (cancelled) return;
+          if (cancelled || !linkedToReader) return;
           for (const [paperID, key] of shownPaperConversationKeys) {
             if (key !== conversationKey) continue;
             readyPinnedPaperIDs = updateReadyPinnedPapers(readyPinnedPaperIDs, {
@@ -6530,11 +6633,12 @@ function openChatWindowInstance(
       }
     }
     if (tornSurface) {
-      // The window's in-memory selection and choices go with it; nothing it
-      // chose was ever written to prefs.
+      // The window's in-memory selection and choices (its reasoning levels
+      // too) go with it; nothing it chose was ever written to prefs.
       disposeTornRegistration?.();
       clearTornSelection(tornSurface);
       clearTornSurfaceChoices(tornSurface);
+      clearSelectedReasoningForSurface(tornSurface);
     }
     releaseDisconnectedEmbeddedPanels(contentArea as Element | null);
   };

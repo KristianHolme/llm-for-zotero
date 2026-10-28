@@ -1053,7 +1053,58 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   // ── W24b ─────────────────────────────────────────────────────────────────
 
-  it("W24b: History in a follower opens paper A's Codex chat while Zotero shows paper C, and the next answer uses A", async function () {
+  /**
+   * Every paper the window's panel shows until the window closes. Mutation
+   * records keep each value data-base-paper-item-id had (attribute old
+   * values) and each panel root put in, so a short visit between two
+   * samples is not missed.
+   */
+  function recordShownPapers(win: Window): Set<number> {
+    const seen = new Set<number>();
+    const note = (value: unknown) => {
+      const id = toKey(value);
+      if (id) seen.add(id);
+    };
+    const panelRootsIn = (node: Node | null): HTMLElement[] => {
+      const element = node as HTMLElement | null;
+      if (element?.nodeType !== 1) return [];
+      const roots = Array.from(
+        element.querySelectorAll?.("#llm-main") || [],
+      ) as HTMLElement[];
+      return element.id === "llm-main" ? [element, ...roots] : roots;
+    };
+    note(rootOf(win)?.dataset.basePaperItemId);
+    const observer = new (win as any).MutationObserver(
+      (records: MutationRecord[]) => {
+        for (const record of records) {
+          if (record.type === "attributes") {
+            if ((record.target as HTMLElement).id === "llm-main") {
+              note(record.oldValue);
+            }
+            continue;
+          }
+          for (const node of Array.from(record.addedNodes)) {
+            for (const root of panelRootsIn(node)) {
+              note(root.dataset.basePaperItemId);
+            }
+          }
+        }
+        note(rootOf(win)?.dataset.basePaperItemId);
+      },
+    );
+    observer.observe(win.document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ["data-base-paper-item-id"],
+    });
+    return seen;
+  }
+
+  // The Codex runtime is not reachable here, so the question is asked in
+  // A's Agent chat, after the follower has been through A's Codex chat.
+  it("W24b: History in a follower opens paper A's Codex chat, then A's Agent chat, while Zotero shows paper C; the follower never shows C, and a question in A's Agent chat carries A's text", async function () {
     Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
     const a = await newPaper("Torn W24b A");
     const c = await newPaper("Torn W24b C");
@@ -1086,13 +1137,12 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     const selectedTab = mainWin().Zotero_Tabs.selectedID;
     assert.equal(selectedTab, readerC.tabID, "Zotero shows C");
 
-    // Every state the follower passes through on the way, sampled.
-    const seenPapers = new Set<number>();
+    // Every paper the follower shows on the way.
+    const seenPapers = recordShownPapers(torn);
     const settlesOn = async (key: number, system: string) => {
       await until(
         () => {
           const state = stateOf(tornWin());
-          seenPapers.add(state.basePaperItemId);
           return (
             state.conversationKey === key &&
             rootOf(tornWin())?.dataset.conversationSystem === system &&
@@ -1435,7 +1485,10 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     // The list renders again mid-drag: the row the drag started on is gone.
     row.remove();
     assert.isNull(rowOf(standalone, key), "the source row was replaced");
-    // dataTransfer.addElement sends dragend to the list, not the row.
+    // dataTransfer.addElement sends dragend to the list, not the row. This
+    // test dispatches it on the list itself, so it passes without the
+    // addElement call too: only a real (live) drag shows that Gecko sends
+    // dragend there after the row is replaced.
     fireDrag(
       standalone,
       sourceListOf(standalone),
@@ -1487,6 +1540,8 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     fireDrag(standalone, titleRowOf(standalone), "dragover", transfer);
     fireDrag(standalone, titleRowOf(standalone), "drop", transfer);
     // `drag` goes to the list too (addElement); dragend reports (0, 0).
+    // Dispatched on the list here, so this passes without addElement too;
+    // only a real (live) drag shows where Gecko sends them.
     fireDrag(
       standalone,
       sourceListOf(standalone),
@@ -2150,6 +2205,45 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     assert.equal(state.basePaperItemId, a.parentItemId, JSON.stringify(state));
   });
 
+  // ── W30b ─────────────────────────────────────────────────────────────────
+
+  it("W30b: when the leader that Open in main window opens closes before it loads, the follower stays and its button works again", async function () {
+    const a = await newPaper("Torn W30b A");
+    const chat = await seedChat({
+      system: "upstream",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W30b question",
+    });
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: chat.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    assert.isNull(standaloneWin(), "the leader is closed");
+    clickOpenInMainWindow(follower);
+    const button = follower.document.querySelector(
+      ".llm-follower-open-main",
+    ) as HTMLButtonElement;
+    assert.isTrue(button.disabled, "the button waits for the leader");
+    // The leader window is opened in the click; close it before it loads.
+    const leader = standaloneWin();
+    assert.isOk(leader, "Open in main window starts to open the leader");
+    leader!.close();
+    await until(
+      () => !button.disabled,
+      () => "Open in main window is enabled again",
+      5_000,
+    );
+    assert.isFalse(follower.closed, "the follower stays open");
+    assert.equal(stateOf(follower).conversationKey, chat.conversationKey);
+    assert.isFalse(
+      api.isStandaloneWindowActiveForTest(),
+      "no leader counts as opening",
+    );
+  });
+
   // ── W31 ──────────────────────────────────────────────────────────────────
 
   it("W31: Open in main window shows a library-chat follower's chat in the leader's Library chat", async function () {
@@ -2392,6 +2486,137 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     } finally {
       secondFocus.restore();
     }
+  });
+
+  // ── W33 ──────────────────────────────────────────────────────────────────
+
+  it("W33: turning off Codex closes the followers holding Codex chats; a follower on an Agent chat stays", async function () {
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
+    const a = await newPaper("Torn W33 A");
+    const codexPaper = await seedChat({
+      system: "codex",
+      kind: "paper",
+      paperItemId: a.parentItemId,
+      userText: "Torn W33 Codex paper question",
+    });
+    const codexLibrary = await seedChat({
+      system: "codex",
+      kind: "global",
+      userText: "Torn W33 Codex library question",
+    });
+    const agentLibrary = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W33 Agent library question",
+    });
+    const onCodexPaper = await openAnotherFollower({
+      system: "codex",
+      conversationKey: codexPaper.conversationKey,
+      kind: "paper",
+      paperItemID: a.parentItemId,
+    });
+    const onCodexLibrary = await openAnotherFollower({
+      system: "codex",
+      conversationKey: codexLibrary.conversationKey,
+      kind: "global",
+    });
+    const onAgent = await openAnotherFollower({
+      system: "upstream",
+      conversationKey: agentLibrary.conversationKey,
+      kind: "global",
+    });
+    const shownPaper = recordShownKeys(onCodexPaper);
+    const shownLibrary = recordShownKeys(onCodexLibrary);
+    const keysBefore = await storedChatKeys();
+
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", false, true);
+    await until(
+      () => onCodexPaper.closed && onCodexLibrary.closed,
+      () =>
+        `the Codex followers close: ${JSON.stringify({
+          paper: onCodexPaper.closed || stateOf(onCodexPaper),
+          library: onCodexLibrary.closed || stateOf(onCodexLibrary),
+        })}`,
+    );
+    assert.deepEqual(
+      shownPaper,
+      [codexPaper.conversationKey],
+      "the Codex paper follower showed no other chat",
+    );
+    assert.deepEqual(
+      shownLibrary,
+      [codexLibrary.conversationKey],
+      "the Codex library follower showed no other chat",
+    );
+    await Zotero.Promise.delay(800);
+    assert.isFalse(onAgent.closed, "the Agent follower stays open");
+    assert.equal(
+      stateOf(onAgent).conversationKey,
+      agentLibrary.conversationKey,
+      "the Agent follower keeps its chat",
+    );
+    const open = api.getTornChatWindowsForTest();
+    assert.isTrue(
+      open.length === 1 && open[0] === onAgent,
+      "only the Agent follower is left",
+    );
+    assert.deepEqual(
+      await storedChatKeys(),
+      keysBefore,
+      "no Agent chat was created in place of a Codex chat",
+    );
+  });
+
+  // ── W34 ──────────────────────────────────────────────────────────────────
+
+  it("W34: a chat picked in a follower's History is that follower's at once, so opening it meanwhile opens no second follower", async function () {
+    const first = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W34 first library question",
+    });
+    const picked = await seedChat({
+      system: "upstream",
+      kind: "global",
+      userText: "Torn W34 picked library question",
+    });
+    const follower = await openFollower({
+      system: "upstream",
+      conversationKey: first.conversationKey,
+      kind: "global",
+    });
+    (await openFollowerHistory(follower, picked.conversationKey)).click();
+    assert.equal(
+      stateOf(follower).conversationKey,
+      first.conversationKey,
+      "the picked chat is not mounted yet",
+    );
+    // An open of the picked chat (a menu or a drag in the leader) before
+    // the follower has mounted it.
+    await api.openTornChatWindowForTest({
+      system: "upstream",
+      conversationKey: picked.conversationKey,
+      kind: "global",
+      libraryID: Number(Zotero.Libraries.userLibraryID),
+    });
+    // Counted, not listed: chai cannot print a chrome window.
+    assert.equal(
+      api.getTornChatWindowsForTest().length,
+      1,
+      "no second follower opens on the picked chat",
+    );
+    await until(
+      () => stateOf(follower).conversationKey === picked.conversationKey,
+      () =>
+        `the follower shows the picked chat: ${JSON.stringify(stateOf(follower))}`,
+    );
+    // The chat it left has no follower now: opening it opens one.
+    await openAnotherFollower({
+      system: "upstream",
+      conversationKey: first.conversationKey,
+      kind: "global",
+    });
+    assert.equal(api.getTornChatWindowsForTest().length, 2);
   });
 
   // ── W15 ──────────────────────────────────────────────────────────────────
@@ -2678,9 +2903,136 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     return seen;
   }
 
-  it("W21: deleting a follower's chat elsewhere, or in the follower, closes the follower", async function () {
+  /** Every stored Agent-runtime chat, library and paper chats. */
+  async function storedChatKeys(): Promise<number[]> {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT conversation_key AS conversationKey
+       FROM llm_for_zotero_global_conversations
+       UNION ALL
+       SELECT conversation_key AS conversationKey
+       FROM llm_for_zotero_paper_conversations`,
+    )) as Array<{ conversationKey: unknown }>;
+    return rows.map((row) => toKey(row.conversationKey)).sort((x, y) => x - y);
+  }
+
+  const isPendingDeletion = async (key: number): Promise<boolean> =>
+    (await api.getPendingDeletionState()).pendingConversationKeys.includes(key);
+
+  const undoToastOf = (win: Window): HTMLElement | null =>
+    (bodyOf(win)?.querySelector("#llm-history-undo") as HTMLElement | null) ||
+    null;
+
+  /**
+   * While Undo is possible the follower keeps its chat, shows its own Undo,
+   * and has shown no other chat.
+   */
+  async function assertKeepsChatWithUndo(
+    context: string,
+    win: Window,
+    key: number,
+    shown: number[],
+  ): Promise<void> {
+    await until(
+      () => isShown(undoToastOf(win)),
+      () =>
+        `${context}: the follower shows its own Undo: ${JSON.stringify(stateOf(win))}`,
+    );
+    // Well past the reactions to the queued deletion.
+    await Zotero.Promise.delay(1_000);
+    assert.isFalse(win.closed, `${context}: the follower stays open`);
+    assert.equal(
+      stateOf(win).conversationKey,
+      key,
+      `${context}: the follower keeps its chat: ${JSON.stringify(stateOf(win))}`,
+    );
+    assert.deepEqual(shown, [key], `${context}: it showed no other chat`);
+    assert.isTrue(
+      await isPendingDeletion(key),
+      `${context}: the deletion is still undoable`,
+    );
+  }
+
+  /** The follower's own Undo restores the chat and leaves the follower on it. */
+  async function undoInFollower(
+    context: string,
+    win: Window,
+    key: number,
+    shown: number[],
+  ): Promise<void> {
+    const undo = bodyOf(win)?.querySelector(
+      "#llm-history-undo-btn",
+    ) as HTMLButtonElement | null;
+    assert.isOk(undo, `${context}: the follower has an Undo button`);
+    undo!.click();
+    await until(
+      async () => !(await isPendingDeletion(key)),
+      () => `${context}: Undo restores chat ${key}`,
+    );
+    await until(
+      () => !isShown(undoToastOf(win)),
+      () => `${context}: the follower's Undo goes away`,
+    );
+    await Zotero.Promise.delay(800);
+    assert.isFalse(
+      win.closed,
+      `${context}: the follower stays open after Undo`,
+    );
+    assert.equal(
+      stateOf(win).conversationKey,
+      key,
+      `${context}: the follower shows the restored chat: ${JSON.stringify(stateOf(win))}`,
+    );
+    assert.deepEqual(shown, [key], `${context}: it showed no other chat`);
+  }
+
+  it("W21: a follower whose chat is deleted elsewhere keeps it with its own Undo, stays after Undo, and closes once the deletion is final", async function () {
     const { key, standalone } = await setupTornOnA("Torn W21");
     const follower = tornWin()!;
+    const shown = recordShownKeys(follower);
+    const deleteInLeader = async () => {
+      await until(
+        () => Boolean(rowOf(standalone, key)),
+        () => `the standalone window lists chat ${key}`,
+      );
+      const remove = rowOf(standalone, key)!.querySelector(
+        ".llm-standalone-conv-delete",
+      ) as HTMLElement | null;
+      assert.isOk(remove, "the row offers Delete");
+      remove!.click();
+      await until(
+        () => isPendingDeletion(key),
+        () => `the deletion of chat ${key} is queued`,
+      );
+    };
+
+    await deleteInLeader();
+    await assertKeepsChatWithUndo(
+      "deleted in the leader",
+      follower,
+      key,
+      shown,
+    );
+    await undoInFollower("deleted in the leader", follower, key, shown);
+
+    // Deleted again, and left to run out: the deletion becomes final.
+    await deleteInLeader();
+    await until(
+      () => follower.closed,
+      () =>
+        `the follower closes once the deletion is final: ${JSON.stringify(stateOf(follower))}`,
+      15_000,
+    );
+    assert.deepEqual(shown, [key], "the follower never showed another chat");
+    await until(
+      () => stateOf(standalone).conversationKey !== key,
+      () =>
+        `the standalone window leaves the deleted chat: ${JSON.stringify(stateOf(standalone))}`,
+    );
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0);
+  });
+
+  it("W21b: a follower's own Delete keeps the chat with its Undo, Undo leaves it open, and it closes once the deletion is final, with no new chat stored", async function () {
+    await setupTornOnA("Torn W21b");
     // The plugin's warnings and errors reach Zotero.debug through its
     // toolkit log, prefixed with the add-on name, at the "warn" level.
     Zotero.Prefs.set(PREF_PREFIX + "logLevel", "warn", true);
@@ -2697,73 +3049,50 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       return originalLogError.call(this, error);
     };
     try {
-      // Deleted from the leader's chat list.
-      const shown = recordShownKeys(follower);
-      await until(
-        () => Boolean(rowOf(standalone, key)),
-        () => `the standalone window lists chat ${key}`,
-      );
-      const remove = rowOf(standalone, key)!.querySelector(
-        ".llm-standalone-conv-delete",
-      ) as HTMLElement | null;
-      assert.isOk(remove, "the row offers Delete");
-      remove!.click();
-      await until(
-        async () =>
-          (
-            await api.getPendingDeletionState()
-          ).pendingConversationKeys.includes(key),
-        () => `the deletion of chat ${key} is queued`,
-      );
-      await until(
-        () => follower.closed,
-        () =>
-          `the follower closes: ${JSON.stringify(stateOf(follower))}, shown ${JSON.stringify(shown)}`,
-        15_000,
-      );
-      assert.deepEqual(
-        shown,
-        [key],
-        "the follower never showed another chat before it closed",
-      );
-      await until(
-        () => stateOf(standalone).conversationKey !== key,
-        () =>
-          `the standalone window leaves the deleted chat: ${JSON.stringify(stateOf(standalone))}`,
-      );
-      assert.lengthOf(api.getTornChatWindowsForTest(), 0);
-
-      // Deleted with the follower's own Delete button.
       const own = await seedChat({
         system: "upstream",
         kind: "global",
-        userText: "Torn W21 library question",
+        userText: "Torn W21b library question",
       });
-      const second = await openAnotherFollower({
+      const key = own.conversationKey;
+      const follower = await openAnotherFollower({
         system: "upstream",
-        conversationKey: own.conversationKey,
+        conversationKey: key,
         kind: "global",
       });
-      const secondShown = recordShownKeys(second);
-      const ownDelete = shownIn(second, ".llm-standalone-icon-clear")[0];
-      assert.isOk(ownDelete, "the follower offers Delete");
-      ownDelete.click();
+      const shown = recordShownKeys(follower);
+      const keysBefore = await storedChatKeys();
+      assert.include(keysBefore, key);
+      const deleteInFollower = async () => {
+        const ownDelete = shownIn(follower, ".llm-standalone-icon-clear")[0];
+        assert.isOk(ownDelete, "the follower offers Delete");
+        ownDelete.click();
+        await until(
+          () => isPendingDeletion(key),
+          () => `the follower's chat ${key} is queued for deletion`,
+        );
+      };
+
+      await deleteInFollower();
+      await assertKeepsChatWithUndo("own Delete", follower, key, shown);
+      await undoInFollower("own Delete", follower, key, shown);
+
+      await deleteInFollower();
       await until(
-        () => second.closed,
+        () => follower.closed,
         () =>
-          `the follower closes after its own Delete: ${JSON.stringify(stateOf(second))}, shown ${JSON.stringify(secondShown)}`,
+          `the follower closes once the deletion is final: ${JSON.stringify(stateOf(follower))}`,
         15_000,
       );
-      assert.deepEqual(
-        secondShown,
-        [own.conversationKey],
-        "the follower never showed another chat before it closed",
+      assert.deepEqual(shown, [key], "the follower never showed another chat");
+      await until(
+        async () => !(await isPendingDeletion(key)),
+        () => `the deletion of chat ${key} completes`,
       );
-      assert.isTrue(
-        (await api.getPendingDeletionState()).pendingConversationKeys.includes(
-          own.conversationKey,
-        ),
-        "the follower's chat is queued for deletion",
+      assert.deepEqual(
+        await storedChatKeys(),
+        keysBefore.filter((stored) => stored !== key),
+        "the chat is gone and no other chat (no empty draft) was stored",
       );
       await Zotero.Promise.delay(800);
       assert.deepEqual(logged, [], "no warning or error is logged");

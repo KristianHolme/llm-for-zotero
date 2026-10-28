@@ -2241,6 +2241,12 @@ export function setupHandlers(
     const isPanelUnavailable = () =>
       !(body as Element).isConnected ||
       body.ownerDocument?.defaultView?.closed === true;
+    // A follower window's panel stays on its chat when that chat's runtime
+    // is turned off: the window closes (standaloneWindow.ts).
+    const leaveTurnedOffRuntime = () => {
+      if (isTornSurface(selectionSurface())) return;
+      void switchConversationSystem("upstream");
+    };
     const onAgentPrefChange = () => {
       if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
@@ -2265,7 +2271,7 @@ export function setupHandlers(
           });
         demoteConversationSystemOnEverySurface("claude_code");
         if (isClaudeConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
@@ -2279,7 +2285,7 @@ export function setupHandlers(
       if (!isCodexAppServerModeEnabled()) {
         demoteConversationSystemOnEverySurface("codex");
         if (isCodexConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
