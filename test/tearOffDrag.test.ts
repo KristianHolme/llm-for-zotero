@@ -4,6 +4,7 @@ import {
   classifyTearOffDragEnd,
   decodeTornChatIdentity,
   encodeTornChatIdentity,
+  tearOffDropPoint,
   type ScreenRect,
 } from "../src/modules/contextPanel/tearOffDrag";
 import type { TornChatIdentity } from "../src/modules/contextPanel/tornChatWindows";
@@ -13,14 +14,11 @@ const classify = classifyTearOffDragEnd;
 const screen: ScreenRect = { left: 0, top: 25, width: 1920, height: 1055 };
 
 const base = {
-  dropEffect: "none",
   userCancelled: false,
+  droppedOnSource: false,
   screenX: 900,
   screenY: 300,
-  appWindowRects: [
-    { left: 0, top: 25, width: 600, height: 800 },
-    { left: 1300, top: 100, width: 500, height: 700 },
-  ] as ScreenRect[],
+  lastDragPoint: null as { screenX: number; screenY: number } | null,
   dropScreen: screen,
   windowSize: { width: 640, height: 760 },
 };
@@ -36,18 +34,28 @@ describe("tearOffDrag", function () {
     });
   });
 
-  it("ignores a drag some target accepted", function () {
-    assert.deepEqual(classify({ ...base, dropEffect: "move" }), {
+  it("ignores a drag dropped back on its own source region", function () {
+    assert.deepEqual(classify({ ...base, droppedOnSource: true }), {
       kind: "ignore",
     });
+    // Wherever the drop point is, and whatever the last drag point was.
+    assert.deepEqual(
+      classify({
+        ...base,
+        droppedOnSource: true,
+        lastDragPoint: { screenX: 700, screenY: 500 },
+      }),
+      { kind: "ignore" },
+    );
   });
 
-  it("ignores a drop inside any Zotero or plugin window", function () {
-    assert.deepEqual(classify({ ...base, screenX: 1400, screenY: 400 }), {
-      kind: "ignore",
-    });
+  it("opens at a release inside what used to count as a window", function () {
+    // The main Zotero window or the standalone window covers this point;
+    // windows no longer block a release outside the source region.
     assert.deepEqual(classify({ ...base, screenX: 10, screenY: 30 }), {
-      kind: "ignore",
+      kind: "open",
+      screenX: 10,
+      screenY: 30,
     });
   });
 
@@ -59,10 +67,81 @@ describe("tearOffDrag", function () {
     });
   });
 
+  it("prefers the drop point over the last drag point", function () {
+    assert.deepEqual(
+      classify({ ...base, lastDragPoint: { screenX: 700, screenY: 200 } }),
+      { kind: "open", screenX: 900, screenY: 300 },
+    );
+  });
+
+  it("falls back to the last drag point when the drop point is not usable", function () {
+    const lastDragPoint = { screenX: 700, screenY: 200 };
+    const expected = { kind: "open", screenX: 700, screenY: 200 };
+    assert.deepEqual(
+      classify({ ...base, screenX: 0, screenY: 0, lastDragPoint }),
+      expected,
+    );
+    assert.deepEqual(
+      classify({ ...base, screenX: Number.NaN, lastDragPoint }),
+      expected,
+    );
+    assert.deepEqual(
+      classify({
+        ...base,
+        screenY: Number.POSITIVE_INFINITY,
+        lastDragPoint,
+      }),
+      expected,
+    );
+    assert.deepEqual(tearOffDropPoint(0, 0, lastDragPoint), lastDragPoint);
+    assert.deepEqual(tearOffDropPoint(900, 300, lastDragPoint), {
+      screenX: 900,
+      screenY: 300,
+    });
+  });
+
+  it("keeps a drop point at (0, y) or (x, 0)", function () {
+    assert.deepEqual(classify({ ...base, screenX: 0, screenY: 300 }), {
+      kind: "open",
+      screenX: 0,
+      screenY: 300,
+    });
+    assert.deepEqual(
+      classify({ ...base, screenX: 900, screenY: 0 }).kind,
+      "open",
+    );
+  });
+
+  it("ignores a drag with no usable point at all", function () {
+    assert.deepEqual(classify({ ...base, screenX: Number.NaN }), {
+      kind: "ignore",
+    });
+    assert.deepEqual(classify({ ...base, screenX: 0, screenY: 0 }), {
+      kind: "ignore",
+    });
+    assert.deepEqual(
+      classify({
+        ...base,
+        screenX: 0,
+        screenY: 0,
+        lastDragPoint: { screenX: 0, screenY: 0 },
+      }),
+      { kind: "ignore" },
+    );
+    assert.deepEqual(
+      classify({
+        ...base,
+        screenX: Number.NaN,
+        lastDragPoint: { screenX: Number.NaN, screenY: 40 },
+      }),
+      { kind: "ignore" },
+    );
+    assert.isNull(tearOffDropPoint(0, 0, null));
+  });
+
   it("clamps the window inside the drop screen", function () {
     const corner = classify({
       ...base,
-      appWindowRects: [],
       screenX: screen.left + screen.width - 1,
       screenY: screen.top + screen.height - 1,
     });
@@ -73,29 +152,46 @@ describe("tearOffDrag", function () {
     });
     const second = classify({
       ...base,
-      appWindowRects: [],
       dropScreen: { left: -1280, top: 0, width: 1280, height: 1024 },
       screenX: -1300,
       screenY: -20,
     });
     assert.deepEqual(second, { kind: "open", screenX: -1280, screenY: 0 });
+    // The last drag point is clamped the same way.
+    const fallback = classify({
+      ...base,
+      screenX: 0,
+      screenY: 0,
+      lastDragPoint: {
+        screenX: screen.left + screen.width - 1,
+        screenY: screen.top + screen.height - 1,
+      },
+    });
+    assert.deepEqual(fallback, corner);
+  });
+
+  it("opens the window where the drag image was, not at the pointer", function () {
+    const result = classify({
+      ...base,
+      screenX: screen.left + 300,
+      screenY: screen.top + 200,
+      grabOffset: { x: 14, y: 14 },
+    });
+    assert.deepEqual(result, {
+      kind: "open",
+      screenX: screen.left + 286,
+      screenY: screen.top + 186,
+    });
   });
 
   it("keeps the window's top-left on the screen when the screen is smaller", function () {
     const result = classify({
       ...base,
-      appWindowRects: [],
       dropScreen: { left: 100, top: 50, width: 500, height: 600 },
       screenX: 300,
       screenY: 300,
     });
     assert.deepEqual(result, { kind: "open", screenX: 100, screenY: 50 });
-  });
-
-  it("ignores a drop point that is not a number", function () {
-    assert.deepEqual(classify({ ...base, screenX: Number.NaN }), {
-      kind: "ignore",
-    });
   });
 
   it("round-trips an identity and rejects junk", function () {

@@ -4734,6 +4734,49 @@
   padding-left: 10px;
 }
 
+/* The picture under the pointer while a chat is torn off: a small window
+ * with the unlinked icon and the title, as the follower opens. A drag image
+ * must be laid out, so it waits off-screen rather than hidden. */
+.llm-tear-off-drag-image {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 220px;
+  height: 72px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--material-sidepane);
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.llm-tear-off-drag-image-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  font-size: var(--llm-standalone-ui-font-size);
+  line-height: var(--llm-standalone-ui-line-height);
+  font-weight: 500;
+  color: var(--fill-primary);
+  box-shadow: inset 0 -1px var(--stroke-secondary);
+}
+
+.llm-tear-off-drag-image .llm-standalone-unlinked-icon {
+  margin-right: 0;
+}
+
+.llm-tear-off-drag-image-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .llm-follower-history::before {
   mask-image: url("icons/action-history-clock.svg");
   -webkit-mask-image: url("icons/action-history-clock.svg");

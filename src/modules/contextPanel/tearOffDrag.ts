@@ -1,10 +1,10 @@
 /**
- * Tearing a chat off a chat window: drag a list row (or the chat title) out
- * of every Zotero window and a torn-off window opens on that chat where the
- * drag ended.
+ * Tearing a chat off the standalone window: drag a list row (or the chat
+ * title) and release it anywhere but where the drag started, and a torn-off
+ * window opens on that chat where the drag ended.
  *
  * Pure: no Zotero or DOM access, so the decision runs under node. The window
- * code reads the drag, the open windows and the screen, and passes them in.
+ * code reads the drag and the screen, and passes them in.
  */
 import type { ConversationSystem } from "../../shared/types";
 import type { TornChatIdentity } from "./tornChatWindows";
@@ -20,20 +20,31 @@ export type ScreenRect = {
   height: number;
 };
 
+/** A point in screen pixels. */
+export type ScreenPoint = { screenX: number; screenY: number };
+
 export type TearOffDragEndInput = {
-  /** The drag's dropEffect at dragend: "none" when no target accepted it. */
-  dropEffect: string;
   /** True when the user cancelled the drag (Escape). */
   userCancelled: boolean;
-  /** Where the drag ended, in screen pixels. */
+  /**
+   * True when the drag's own source region took the drop: the chat list
+   * for a row, the title row for the title.
+   */
+  droppedOnSource: boolean;
+  /** Where dragend says the drag ended, in screen pixels. */
   screenX: number;
   screenY: number;
-  /** Every open Zotero or plugin window. */
-  appWindowRects: ScreenRect[];
+  /** The last point a `drag` event reported during the drag, if any. */
+  lastDragPoint: ScreenPoint | null;
   /** The available area of the screen the drag ended on. */
   dropScreen: ScreenRect;
   /** The size the torn-off window opens at. */
   windowSize: { width: number; height: number };
+  /**
+   * Where the pointer holds the drag image, from the image's top-left
+   * corner: the window opens where the image was. Zero when omitted.
+   */
+  grabOffset?: { x: number; y: number };
 };
 
 export type TearOffDragEndDecision =
@@ -94,13 +105,35 @@ export function decodeTornChatIdentity(raw: string): TornChatIdentity | null {
   return identity;
 }
 
-function containsPoint(rect: ScreenRect, x: number, y: number): boolean {
+/**
+ * A point a drag event can stand behind: finite, and not exactly (0, 0),
+ * which some platforms report for every drag event.
+ */
+export function isUsableDragPoint(screenX: number, screenY: number): boolean {
   return (
-    x >= rect.left &&
-    x < rect.left + rect.width &&
-    y >= rect.top &&
-    y < rect.top + rect.height
+    Number.isFinite(screenX) &&
+    Number.isFinite(screenY) &&
+    !(screenX === 0 && screenY === 0)
   );
+}
+
+/**
+ * Where a drag ended: dragend's own point, or the last drag point when
+ * dragend's is not usable; null when neither is.
+ */
+export function tearOffDropPoint(
+  screenX: number,
+  screenY: number,
+  lastDragPoint: ScreenPoint | null,
+): ScreenPoint | null {
+  if (isUsableDragPoint(screenX, screenY)) return { screenX, screenY };
+  if (
+    lastDragPoint &&
+    isUsableDragPoint(lastDragPoint.screenX, lastDragPoint.screenY)
+  ) {
+    return { screenX: lastDragPoint.screenX, screenY: lastDragPoint.screenY };
+  }
+  return null;
 }
 
 /** The axis position that keeps `size` inside [start, start + extent). */
@@ -114,25 +147,25 @@ function clampAxis(
 }
 
 /**
- * What a finished drag does: nothing when it was cancelled, a target took
- * it, or it ended over a Zotero or plugin window; otherwise a torn-off
- * window opens with its top-left corner at the drop point, moved so the
- * whole window lies on the drop screen.
+ * What a finished drag does: nothing when it was cancelled, it was dropped
+ * back on its own source region, or no point says where it ended;
+ * otherwise a torn-off window opens with its top-left corner at the drop
+ * point, moved so the whole window lies on the drop screen. A release
+ * anywhere else opens one, over a Zotero window included.
  */
 export function classifyTearOffDragEnd(
   input: TearOffDragEndInput,
 ): TearOffDragEndDecision {
   if (input.userCancelled) return { kind: "ignore" };
-  if (input.dropEffect !== "none") return { kind: "ignore" };
-  const { screenX, screenY } = input;
-  if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
-    return { kind: "ignore" };
-  }
-  if (
-    input.appWindowRects.some((rect) => containsPoint(rect, screenX, screenY))
-  ) {
-    return { kind: "ignore" };
-  }
+  if (input.droppedOnSource) return { kind: "ignore" };
+  const point = tearOffDropPoint(
+    input.screenX,
+    input.screenY,
+    input.lastDragPoint,
+  );
+  if (!point) return { kind: "ignore" };
+  const screenX = point.screenX - (input.grabOffset?.x ?? 0);
+  const screenY = point.screenY - (input.grabOffset?.y ?? 0);
   const { dropScreen, windowSize } = input;
   return {
     kind: "open",

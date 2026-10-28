@@ -78,6 +78,9 @@ import {
   classifyTearOffDragEnd,
   decodeTornChatIdentity,
   encodeTornChatIdentity,
+  isUsableDragPoint,
+  tearOffDropPoint,
+  type ScreenPoint,
   type ScreenRect,
 } from "./tearOffDrag";
 import { mountPanelShell } from "./panelMount";
@@ -288,6 +291,8 @@ const STANDALONE_WINDOW_FEATURES =
 const TORN_WINDOW_WIDTH_PX = 420;
 const TORN_WINDOW_HEIGHT_PX = 760;
 const TORN_WINDOW_MIN_WIDTH_PX = 360;
+// Where the pointer holds the tear-off drag image, from its top-left corner.
+const TEAR_OFF_DRAG_IMAGE_GRAB_PX = 14;
 const TORN_WINDOW_MIN_HEIGHT_PX = 480;
 
 function buildTornWindowFeatures(placement?: {
@@ -323,37 +328,6 @@ function isFiniteRect(rect: ScreenRect): boolean {
     rect.width > 0 &&
     rect.height > 0
   );
-}
-
-/**
- * The screen rectangles of every open, not minimized Zotero or plugin
- * window. A window or API that cannot be read is left out.
- */
-function readAppWindowRects(): ScreenRect[] {
-  const rects: ScreenRect[] = [];
-  try {
-    const enumerator = (globalThis as any).Services?.wm?.getEnumerator?.(null);
-    while (enumerator?.hasMoreElements?.()) {
-      try {
-        const win = enumerator.getNext() as any;
-        if (!win || win.closed) continue;
-        const minimized = Number(win.STATE_MINIMIZED ?? 2);
-        if (Number(win.windowState) === minimized) continue;
-        const rect = {
-          left: Number(win.screenX),
-          top: Number(win.screenY),
-          width: Number(win.outerWidth),
-          height: Number(win.outerHeight),
-        };
-        if (isFiniteRect(rect)) rects.push(rect);
-      } catch {
-        // A window that cannot be read does not block the drop.
-      }
-    }
-  } catch {
-    // No window list: treat the drop as outside every window.
-  }
-  return rects;
 }
 
 /**
@@ -431,12 +405,7 @@ function resolvePaperShortLabel(paper: Zotero.Item): string {
 export async function getFollowerTitle(
   identity: TornChatIdentity,
 ): Promise<string> {
-  if (identity.kind === "paper") {
-    const paper = Zotero.Items.get(
-      Math.floor(Number(identity.paperItemID || 0)),
-    ) as Zotero.Item | false;
-    return paper ? resolvePaperShortLabel(paper) : t("Paper chat");
-  }
+  if (identity.kind === "paper") return getFollowerPaperTitle(identity);
   try {
     const entry = await conversationRepository.getCatalogEntry({
       system: identity.system,
@@ -448,6 +417,14 @@ export async function getFollowerTitle(
     appLogger.warn("LLM: follower title lookup failed", err);
     return t("Library chat");
   }
+}
+
+// A paper chat follower's title, known at once.
+function getFollowerPaperTitle(identity: TornChatIdentity): string {
+  const paper = Zotero.Items.get(
+    Math.floor(Number(identity.paperItemID || 0)),
+  ) as Zotero.Item | false;
+  return paper ? resolvePaperShortLabel(paper) : t("Paper chat");
 }
 
 // A chat window remembers its library chat in its own selection slot only
@@ -1919,14 +1896,78 @@ function openChatWindowInstance(
         });
       };
 
+      // The tear-off drag under way. Its source region is the node that
+      // gets the drag's `drag` and `dragend` events (dataTransfer.addElement),
+      // one the list's renders never replace: the chat list for a row, the
+      // title row for the title.
+      let activeTearOffDrag: {
+        identity: TornChatIdentity;
+        getIdentity: () => TornChatIdentity | null;
+        region: HTMLElement;
+        droppedOnSource: boolean;
+        lastDragPoint: ScreenPoint | null;
+      } | null = null;
+
+      // The picture under the pointer during a tear-off drag: a small window
+      // with the unlinked icon and the title its follower opens with. Kept
+      // rendered off-screen, since a drag image must be laid out.
+      let tearOffDragImage: HTMLDivElement | null = null;
+      let tearOffDragImageTitle: HTMLSpanElement | null = null;
+      const renderTearOffDragImage = (title: string): HTMLDivElement => {
+        if (!tearOffDragImage || !tearOffDragImage.isConnected) {
+          tearOffDragImage = doc.createElementNS(
+            HTML_NS,
+            "div",
+          ) as HTMLDivElement;
+          tearOffDragImage.className = "llm-tear-off-drag-image";
+          tearOffDragImage.setAttribute("aria-hidden", "true");
+          const bar = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+          bar.className = "llm-tear-off-drag-image-bar";
+          const icon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          icon.className = "llm-standalone-unlinked-icon";
+          tearOffDragImageTitle = doc.createElementNS(
+            HTML_NS,
+            "span",
+          ) as HTMLSpanElement;
+          tearOffDragImageTitle.className = "llm-tear-off-drag-image-title";
+          bar.append(icon, tearOffDragImageTitle);
+          tearOffDragImage.append(bar);
+          root.append(tearOffDragImage);
+        }
+        tearOffDragImageTitle!.textContent = title;
+        return tearOffDragImage;
+      };
+
+      // The follower's title, known while dragstart runs (the drag image is
+      // taken right after it): a paper's short name, or the library chat's
+      // listed title, else the label the drag started on.
+      const tearOffDragTitle = (
+        identity: TornChatIdentity,
+        source: HTMLElement,
+      ): string => {
+        if (identity.kind === "paper") return getFollowerPaperTitle(identity);
+        const listed = standaloneSidebarEntriesByKey.get(
+          identity.conversationKey,
+        );
+        const label =
+          source.querySelector(".llm-standalone-conv-title") || source;
+        return (
+          normalizeHistoryTitle(listed?.title || "") ||
+          normalizeHistoryTitle(label.textContent || "") ||
+          t("Library chat")
+        );
+      };
+
       /**
        * A finished tear-off drag: opens the torn-off window where the drag
-       * ended, unless it was cancelled, a target took it, or it ended over a
-       * Zotero or plugin window.
+       * ended, unless it was cancelled, dropped back on its own source
+       * region, or no point says where it ended.
        */
       const finishTearOffDrag = (
         event: DragEvent,
         identity: TornChatIdentity,
+        drag: { droppedOnSource: boolean; lastDragPoint: ScreenPoint | null },
+        source: "row" | "title",
       ): Window | null => {
         const transfer = event.dataTransfer;
         let userCancelled = false;
@@ -1937,17 +1978,39 @@ function openChatWindowInstance(
         }
         const screenX = Number(event.screenX);
         const screenY = Number(event.screenY);
+        const point = tearOffDropPoint(screenX, screenY, drag.lastDragPoint);
+        const dropScreen = readDropScreen(
+          point?.screenX ?? 0,
+          point?.screenY ?? 0,
+          newWin,
+        );
         const decision = classifyTearOffDragEnd({
-          dropEffect: String(transfer?.dropEffect || "none"),
           userCancelled,
+          droppedOnSource: drag.droppedOnSource,
           screenX,
           screenY,
-          appWindowRects: readAppWindowRects(),
-          dropScreen: readDropScreen(screenX, screenY, newWin),
+          lastDragPoint: drag.lastDragPoint,
+          dropScreen,
           windowSize: {
             width: TORN_WINDOW_WIDTH_PX,
             height: TORN_WINDOW_HEIGHT_PX,
           },
+          grabOffset: {
+            x: TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+            y: TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+          },
+        });
+        // Kept for live checks of real desktop drags (no chat text).
+        appLogger.debug("LLM: tear-off dragend", {
+          source,
+          userCancelled,
+          droppedOnSource: drag.droppedOnSource,
+          screenX,
+          screenY,
+          lastDragPoint: drag.lastDragPoint,
+          dropEffect: String(transfer?.dropEffect || ""),
+          dropScreen,
+          decision,
         });
         if (decision.kind !== "open") return null;
         return openTornChatWindow(identity, {
@@ -1956,15 +2019,69 @@ function openChatWindowInstance(
         });
       };
 
+      // Makes `region` a tear-off source region: it takes back its own
+      // drag (so a release there opens nothing), records where the drag
+      // goes, and finishes it. Installed once per region.
+      const installTearOffRegion = (region: HTMLElement) => {
+        const isOwnDrag = (event: DragEvent): boolean =>
+          Boolean(
+            activeTearOffDrag &&
+            activeTearOffDrag.region === region &&
+            Array.from(event.dataTransfer?.types || []).includes(TEAR_OFF_MIME),
+          );
+        const accept = (event: DragEvent) => {
+          if (!isOwnDrag(event)) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        };
+        region.addEventListener("dragenter", accept);
+        region.addEventListener("dragover", accept);
+        region.addEventListener("drop", (event: DragEvent) => {
+          if (!isOwnDrag(event)) return;
+          event.preventDefault();
+          activeTearOffDrag!.droppedOnSource = true;
+        });
+        region.addEventListener("drag", (event: DragEvent) => {
+          const drag = activeTearOffDrag;
+          if (!drag || drag.region !== region) return;
+          const screenX = Number(event.screenX);
+          const screenY = Number(event.screenY);
+          if (isUsableDragPoint(screenX, screenY)) {
+            drag.lastDragPoint = { screenX, screenY };
+          }
+        });
+        region.addEventListener("dragend", (event: DragEvent) => {
+          const drag = activeTearOffDrag;
+          if (!drag || drag.region !== region) return;
+          activeTearOffDrag = null;
+          let carried: TornChatIdentity | null = null;
+          try {
+            carried = decodeTornChatIdentity(
+              event.dataTransfer?.getData(TEAR_OFF_MIME) || "",
+            );
+          } catch {
+            carried = null;
+          }
+          // The chat must still be one that may be torn off.
+          if (!drag.getIdentity()) return;
+          finishTearOffDrag(
+            event,
+            carried || drag.identity,
+            drag,
+            region === sidebarList ? "row" : "title",
+          );
+        });
+      };
+
       // Makes `source` a tear-off drag source for the chat `getIdentity`
-      // names at the moment the drag starts.
+      // names at the moment the drag starts; `region` is its source region.
       const installTearOffDragSource = (
         source: HTMLElement,
         getIdentity: () => TornChatIdentity | null,
+        region: HTMLElement,
       ) => {
-        let draggedIdentity: TornChatIdentity | null = null;
         source.addEventListener("dragstart", (event: DragEvent) => {
-          draggedIdentity = null;
+          activeTearOffDrag = null;
           const identity = getIdentity();
           const transfer = event.dataTransfer;
           if (!identity || !transfer) {
@@ -1976,23 +2093,35 @@ function openChatWindowInstance(
           transfer.clearData();
           transfer.setData(TEAR_OFF_MIME, encodeTornChatIdentity(identity));
           transfer.effectAllowed = "move";
-          draggedIdentity = identity;
-        });
-        source.addEventListener("dragend", (event: DragEvent) => {
-          const started = draggedIdentity;
-          draggedIdentity = null;
-          if (!started) return;
-          let carried: TornChatIdentity | null = null;
           try {
-            carried = decodeTornChatIdentity(
-              event.dataTransfer?.getData(TEAR_OFF_MIME) || "",
+            // A release outside every window is the gesture, not a failure:
+            // no image sliding back.
+            (transfer as any).mozShowFailAnimation = false;
+          } catch {
+            /* chrome-only; the drag works without it */
+          }
+          try {
+            // `drag` and `dragend` go to the region, which outlives the row.
+            (transfer as any).addElement?.(region);
+          } catch {
+            /* they bubble up from the source instead */
+          }
+          try {
+            transfer.setDragImage(
+              renderTearOffDragImage(tearOffDragTitle(identity, source)),
+              TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+              TEAR_OFF_DRAG_IMAGE_GRAB_PX,
             );
           } catch {
-            carried = null;
+            /* the default image */
           }
-          // The chat must still be one that may be torn off.
-          if (!getIdentity()) return;
-          finishTearOffDrag(event, carried || started);
+          activeTearOffDrag = {
+            identity,
+            getIdentity,
+            region,
+            droppedOnSource: false,
+            lastDragPoint: null,
+          };
         });
       };
 
@@ -2006,7 +2135,13 @@ function openChatWindowInstance(
         }
       };
       if (linkedToReader) {
-        installTearOffDragSource(contentTitleText, tearOffIdentityForTitle);
+        installTearOffRegion(sidebarList);
+        installTearOffRegion(contentTitleBar);
+        installTearOffDragSource(
+          contentTitleText,
+          tearOffIdentityForTitle,
+          contentTitleBar,
+        );
       }
 
       let convCtxEntry: SidebarConv | null = null;
@@ -3290,8 +3425,10 @@ function openChatWindowInstance(
             btn.title = conv.title || t("Untitled chat");
             if (tearOffIdentityForEntry(conv)) {
               btn.setAttribute("draggable", "true");
-              installTearOffDragSource(btn, () =>
-                tearOffIdentityForEntry(conv),
+              installTearOffDragSource(
+                btn,
+                () => tearOffIdentityForEntry(conv),
+                sidebarList,
               );
             }
             sectionRowsBox.appendChild(btn);

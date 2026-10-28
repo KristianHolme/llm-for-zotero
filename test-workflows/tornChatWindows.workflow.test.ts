@@ -1204,7 +1204,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     height: number;
   };
 
-  /** Every open Zotero or plugin window, as the drag handler reads them. */
+  /** Every open Zotero or plugin window. */
   function openWindowRects(): ScreenRect[] {
     const services =
       (globalThis as any).Services || (mainWin() as any).Services;
@@ -1287,6 +1287,42 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
   }
 
+  /** Fires a drag event of `type` on `target` (dragover, drop, drag, dragend). */
+  function fireDrag(
+    win: Window,
+    target: Element,
+    type: string,
+    transfer: DataTransfer,
+    point: { screenX: number; screenY: number } = { screenX: 0, screenY: 0 },
+  ): DragEvent {
+    const event = new (win as any).DragEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+      screenX: point.screenX,
+      screenY: point.screenY,
+    }) as DragEvent;
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  /** The leader's chat list: a row drag's source region. */
+  const sourceListOf = (win: Window): HTMLElement =>
+    win.document.querySelector(".llm-standalone-sidebar-list") as HTMLElement;
+
+  /** The leader's title row: the title drag's source region. */
+  const titleRowOf = (win: Window): HTMLElement =>
+    titleOf(win)!.closest(".llm-standalone-content-title") as HTMLElement;
+
+  /** The middle of the main Zotero window, in screen pixels. */
+  function pointOverMainWindow(): { screenX: number; screenY: number } {
+    const win = mainWin();
+    return {
+      screenX: win.screenX + Math.round(win.outerWidth / 2),
+      screenY: win.screenY + Math.round(win.outerHeight / 2),
+    };
+  }
+
   function openRowMenu(win: Window, row: HTMLElement): void {
     const rect = row.getBoundingClientRect();
     row.dispatchEvent(
@@ -1330,7 +1366,7 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
 
   // ── W11 ──────────────────────────────────────────────────────────────────
 
-  it("W11: dragging a list row out of every window opens a torn-off window on that chat", async function () {
+  it("W11: a list row released over the main Zotero window opens a follower on that chat", async function () {
     const { a, key, standalone } = await setupStandaloneOnA("Torn W11");
     const row = rowOf(standalone, key)!;
     assert.equal(row.getAttribute("draggable"), "true", "the row is draggable");
@@ -1354,15 +1390,49 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       libraryID: Number(Zotero.Libraries.userLibraryID),
       paperItemID: a.parentItemId,
     });
-    assert.equal(transfer.dropEffect, "none", "no target took the drag");
+    assert.isFalse(
+      Boolean((transfer as any).mozShowFailAnimation),
+      "a drop outside every window does not slide the image back",
+    );
+    // The drag image: a small window shape off-screen, rendered (not
+    // display:none), with the unlinked icon and the follower's title.
+    const image = standalone.document.querySelector(
+      ".llm-tear-off-drag-image",
+    ) as HTMLElement | null;
+    assert.isOk(image, "the leader renders a drag image");
+    assert.notEqual(
+      standalone.getComputedStyle(image!)!.display,
+      "none",
+      "the drag image is rendered",
+    );
+    const imageRect = image!.getBoundingClientRect();
+    assert.isAbove(imageRect.width, 0, "the drag image has a size");
+    assert.isAtMost(imageRect.right, 0, "the drag image is off-screen");
+    assert.isOk(
+      image!.querySelector(".llm-standalone-unlinked-icon"),
+      "the drag image shows the unlinked icon",
+    );
+    const imageTitle = textOf(
+      image!.querySelector(".llm-tear-off-drag-image-title"),
+    );
 
-    endDrag(standalone, row, transfer, pointOutsideEveryWindow());
+    // The list renders again mid-drag: the row the drag started on is gone.
+    row.remove();
+    assert.isNull(rowOf(standalone, key), "the source row was replaced");
+    // dataTransfer.addElement sends dragend to the list, not the row.
+    fireDrag(
+      standalone,
+      sourceListOf(standalone),
+      "dragend",
+      transfer,
+      pointOverMainWindow(),
+    );
     await until(
       () =>
         api.getTornChatWindowsForTest().length === 1 &&
         stateOf(tornWin()).conversationKey === key,
       () =>
-        `one torn-off window opens on chat ${key}: ${JSON.stringify({
+        `one follower opens on chat ${key}: ${JSON.stringify({
           windows: api.getTornChatWindowsForTest().length,
           state: stateOf(tornWin()),
         })}`,
@@ -1372,6 +1442,14 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       key,
       paperId: a.parentItemId,
     });
+    await until(
+      () => textOf(followerTitleOf(tornWin())) === imageTitle,
+      () =>
+        `the drag image showed the follower's title: ${JSON.stringify({
+          image: imageTitle,
+          follower: textOf(followerTitleOf(tornWin())),
+        })}`,
+    );
     assert.isTrue(
       standaloneWin() === standalone,
       "the standalone window stays the session window",
@@ -1383,39 +1461,78 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
     );
   });
 
+  // ── W11b ─────────────────────────────────────────────────────────────────
+
+  it("W11b: a dragend with no screen point opens at the last drag point, and a row released on the title row opens too", async function () {
+    const { key, standalone } = await setupStandaloneOnA("Torn W11b");
+    const row = rowOf(standalone, key)!;
+    const transfer = startDrag(standalone, row);
+    // A row drag dropped on the title row: not its own source region.
+    fireDrag(standalone, titleRowOf(standalone), "dragover", transfer);
+    fireDrag(standalone, titleRowOf(standalone), "drop", transfer);
+    // `drag` goes to the list too (addElement); dragend reports (0, 0).
+    fireDrag(
+      standalone,
+      sourceListOf(standalone),
+      "drag",
+      transfer,
+      pointOverMainWindow(),
+    );
+    fireDrag(standalone, sourceListOf(standalone), "dragend", transfer);
+    await until(
+      () =>
+        api.getTornChatWindowsForTest().length === 1 &&
+        stateOf(tornWin()).conversationKey === key,
+      () =>
+        `one follower opens on chat ${key}: ${JSON.stringify({
+          windows: api.getTornChatWindowsForTest().length,
+          state: stateOf(tornWin()),
+        })}`,
+      15_000,
+    );
+  });
+
   // ── W12 ──────────────────────────────────────────────────────────────────
 
-  it("W12: a drag that ends inside a window opens nothing", async function () {
+  it("W12: a drag released back on its own source region, or with no point at all, opens nothing", async function () {
     const { key, standalone } = await setupStandaloneOnA("Torn W12");
-    const row = rowOf(standalone, key)!;
+    const list = sourceListOf(standalone);
 
+    // A row dropped back on the chat list opens nothing, wherever dragend
+    // says it ended.
+    let row = rowOf(standalone, key)!;
     let transfer = startDrag(standalone, row);
-    endDrag(standalone, row, transfer, {
-      screenX: standalone.screenX + Math.round(standalone.outerWidth / 2),
-      screenY: standalone.screenY + Math.round(standalone.outerHeight / 2),
-    });
+    const over = fireDrag(standalone, row, "dragover", transfer);
+    assert.isTrue(
+      over.defaultPrevented,
+      "the chat list accepts its own row's drag",
+    );
+    fireDrag(standalone, row, "drop", transfer);
+    fireDrag(standalone, list, "dragend", transfer, pointOutsideEveryWindow());
 
-    // A drag some target accepted opens nothing either, wherever it ends.
-    const accepted = rowOf(standalone, key)!;
-    transfer = startDrag(standalone, accepted);
-    transfer.dropEffect = "move";
-    endDrag(standalone, accepted, transfer, pointOutsideEveryWindow());
-
-    // The title dropped back on its own window opens nothing.
+    // The title dropped back on its own title row opens nothing.
     const title = titleOf(standalone)!;
     transfer = startDrag(standalone, title);
     assert.deepEqual(Array.from(transfer.types), [TEAR_OFF_MIME]);
-    endDrag(standalone, title, transfer, {
-      screenX: standalone.screenX + 20,
-      screenY: standalone.screenY + 20,
-    });
+    fireDrag(standalone, title, "dragover", transfer);
+    fireDrag(standalone, title, "drop", transfer);
+    fireDrag(
+      standalone,
+      titleRowOf(standalone),
+      "dragend",
+      transfer,
+      pointOverMainWindow(),
+    );
+
+    // A drag with no usable point, from dragend or any drag event, opens
+    // nothing.
+    row = rowOf(standalone, key)!;
+    transfer = startDrag(standalone, row);
+    fireDrag(standalone, list, "drag", transfer);
+    fireDrag(standalone, list, "dragend", transfer);
 
     await Zotero.Promise.delay(1000);
-    assert.lengthOf(
-      api.getTornChatWindowsForTest(),
-      0,
-      "no torn-off window opened",
-    );
+    assert.lengthOf(api.getTornChatWindowsForTest(), 0, "no follower opened");
     assert.equal(stateOf(standalone).conversationKey, key);
   });
 
