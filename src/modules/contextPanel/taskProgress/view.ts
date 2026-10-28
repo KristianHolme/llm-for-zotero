@@ -3461,6 +3461,8 @@ export function mountTaskProgressView(params: {
           open: expanded.has(foldKey),
           toggle: () => toggleCitedFold(foldKey),
         }),
+        // The card's own header already reads "Cited".
+        { heading: false },
       ),
     );
     cards.cited.body.replaceChildren(list);
