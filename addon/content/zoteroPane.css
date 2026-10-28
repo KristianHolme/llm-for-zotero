@@ -4732,9 +4732,9 @@
 #llmforzotero-standalone-chat-root[data-window-role="follower"]
   .llm-follower-title {
   min-width: 0;
-  font-size: calc(15px * var(--llm-font-scale));
-  line-height: calc(20px * var(--llm-font-scale));
-  font-weight: 600;
+  font-size: var(--llm-standalone-ui-font-size);
+  line-height: var(--llm-standalone-ui-line-height);
+  font-weight: 400;
   color: var(--fill-primary);
   white-space: nowrap;
   overflow: hidden;
