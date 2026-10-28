@@ -431,7 +431,7 @@ export function setMessageLineSpacingPercent(value: number) {
     .then((m) => m.setMessageLineSpacingPref(value))
     .catch(() => {});
 }
-export let messageParagraphSpacingPx = 8; // MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX
+export let messageParagraphSpacingPx = 12; // MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX
 export function setMessageParagraphSpacingPx(value: number) {
   messageParagraphSpacingPx = value;
   import("./prefHelpers")
