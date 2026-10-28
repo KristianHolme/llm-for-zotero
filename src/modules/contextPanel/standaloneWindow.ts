@@ -3226,7 +3226,10 @@ export function openStandaloneChat(options?: {
             item.append(icon, label);
 
             // Tooltip summarizes source + available actions
-            const tooltipLines = [entry.description || entry.filename, ""];
+            const tooltipLines = [
+              t(entry.description || "") || entry.filename,
+              "",
+            ];
             if (entry.source === "system") {
               tooltipLines.push(`Shipped built-in (v${entry.version ?? 0})`);
             } else if (entry.source === "customized") {
