@@ -2872,6 +2872,16 @@ describe("codexAppServerProcess", function () {
       );
     });
 
+    it("checks and passes a quoted folder without its quotes", async function () {
+      const home = "/Users/me/Codex Zotero";
+      const calls = await spawnWithHome(
+        ` "${home}" `,
+        {},
+        (path) => path === home || path === "/opt/codex",
+      );
+      assert.equal(calls[0]?.environment?.CODEX_HOME, home);
+    });
+
     it("fails with a readable error when the folder is missing", async function () {
       let message = "";
       try {
